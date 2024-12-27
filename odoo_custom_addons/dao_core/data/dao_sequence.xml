@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Sequence for DAO Configurations -->
+        <record id="seq_dao_config" model="ir.sequence">
+            <field name="name">DAO Configuration Sequence</field>
+            <field name="code">dao.config</field>
+            <field name="prefix">DAO/</field>
+            <field name="padding">5</field>
+            <field name="company_id" eval="False"/>
+        </record>
+
+        <!-- Sequence for DAO Transactions -->
+        <record id="seq_dao_transaction" model="ir.sequence">
+            <field name="name">DAO Transaction Sequence</field>
+            <field name="code">dao.transaction</field>
+            <field name="prefix">TX/%(year)s/</field>
+            <field name="padding">6</field>
+            <field name="company_id" eval="False"/>
+        </record>
+
+        <!-- Default Configuration Data -->
+        <record id="default_dao_config" model="dao.config">
+            <field name="name">Default Ethereum Configuration</field>
+            <field name="network_id">1</field>
+            <field name="rpc_url">https://eth-mainnet.alchemyapi.io/v2/your-api-key</field>
+            <field name="contract_address">0x0000000000000000000000000000000000000000</field>
+            <field name="contract_abi">[{"type": "constructor", "inputs": []}]</field>
+            <field name="gas_limit">8000000</field>
+            <field name="gas_price_strategy">legacy</field>  <!-- Add this line -->
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Cron Job for Transaction Status Updates -->
+        <record id="ir_cron_update_transaction_status" model="ir.cron">
+            <field name="name">Update DAO Transaction Status</field>
+            <field name="model_id" ref="model_dao_transaction"/>
+            <field name="state">code</field>
+            <field name="code">model.update_pending_transactions()</field>
+            <field name="interval_number">5</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Cron Job for Gas Price Updates -->
+        <record id="ir_cron_update_gas_prices" model="ir.cron">
+            <field name="name">Update Gas Prices</field>
+            <field name="model_id" ref="model_dao_config"/>
+            <field name="state">code</field>
+            <field name="code">model.update_gas_prices()</field>
+            <field name="interval_number">10</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Cron Job for Blockchain Synchronization -->
+        <record id="ir_cron_sync_blockchain" model="ir.cron">
+            <field name="name">Synchronize Blockchain Data</field>
+            <field name="model_id" ref="model_dao_config"/>
+            <field name="state">code</field>
+            <field name="code">model.sync_blockchain_data()</field>
+            <field name="interval_number">15</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>

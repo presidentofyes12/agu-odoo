@@ -1,0 +1,53 @@
+.o_wallet_dashboard {
+    padding: 1rem;
+
+    .o_wallet_dashboard_header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+
+        h1 {
+            margin: 0;
+        }
+
+        .o_wallet_actions {
+            .btn + .btn {
+                margin-left: 0.5rem;
+            }
+        }
+    }
+
+    .o_wallet_card {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        margin-bottom: 1rem;
+        height: 100%;
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: #2b2b2b;
+        }
+
+        .o_wallet_address, 
+        .o_wallet_balance,
+        .o_transaction_stats,
+        .o_network_info {
+            margin: 0.5rem 0;
+        }
+
+        .btn-link {
+            padding: 0;
+            margin-left: 0.5rem;
+            color: var(--primary);
+
+            &:hover {
+                color: var(--primary-darker);
+                text-decoration: none;
+            }
+        }
+    }
+}

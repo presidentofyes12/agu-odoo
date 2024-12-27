@@ -1,0 +1,13 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_dao_config_user,dao.config.user,dao_core.model_dao_config,dao_core.group_dao_user,1,0,0,0
+access_dao_config_admin,dao.config.admin,dao_core.model_dao_config,dao_core.group_dao_admin,1,1,1,1
+access_dao_config_auditor,dao.config.auditor,dao_core.model_dao_config,dao_core.group_dao_auditor,1,0,0,0
+
+access_dao_transaction_user,dao.transaction.user,dao_core.model_dao_transaction,dao_core.group_dao_user,1,1,1,0
+access_dao_transaction_admin,dao.transaction.admin,dao_core.model_dao_transaction,dao_core.group_dao_admin,1,1,1,1
+access_dao_transaction_auditor,dao.transaction.auditor,dao_core.model_dao_transaction,dao_core.group_dao_auditor,1,0,0,0
+
+access_dao_contract_wizard_admin,dao.contract.wizard.admin,dao_core.model_dao_contract_wizard,dao_core.group_dao_admin,1,1,1,1
+access_dao_settings_admin,dao.settings.admin,model_res_config_settings,dao_core.group_dao_admin,1,1,1,1
+access_dao_contract_wizard_user,dao.contract.wizard.user,dao_core.model_dao_contract_wizard,dao_core.group_dao_user,1,0,0,0
+access_dao_member_private_key_user,dao.member.private.key.user,model_res_users,base.group_user,1,1,0,0

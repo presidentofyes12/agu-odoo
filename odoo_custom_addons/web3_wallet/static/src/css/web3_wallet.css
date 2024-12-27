@@ -1,0 +1,139 @@
+/* Web3 Wallet Container */
+.o_web3_wallet_container {
+    padding: 1rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.o_wallet_card {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+    background: white;
+}
+
+.o_wallet_info {
+    padding: 1rem 0;
+}
+
+/* Address Display */
+.o_wallet_address {
+    font-family: monospace;
+    background-color: #f8f9fa;
+}
+
+.o_view_explorer {
+    padding: 0.375rem 0.75rem;
+}
+
+/* Balance Display */
+.o_wallet_balance {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #1a73e8;
+    padding: 0.5rem 0;
+}
+
+/* Network Selector */
+.o_network_selector {
+    border-radius: 4px;
+    border: 1px solid #ced4da;
+}
+
+/* Transaction History */
+.o_transaction_history {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.o_history_tbody tr {
+    transition: background-color 0.2s;
+}
+
+.o_history_tbody tr:hover {
+    background-color: #f8f9fa;
+}
+
+/* Transaction Status Badges */
+.o_tx_status {
+    padding: 0.25rem 0.5rem;
+    border-radius: 12px;
+    font-size: 0.875rem;
+}
+
+.o_tx_status.confirmed {
+    background-color: #e6f4ea;
+    color: #1e8e3e;
+}
+
+.o_tx_status.pending {
+    background-color: #fef7e0;
+    color: #b06000;
+}
+
+.o_tx_status.failed {
+    background-color: #fce8e6;
+    color: #c5221f;
+}
+
+/* Transaction Details */
+.o_transaction_details {
+    background-color: #f8f9fa;
+    padding: 0.75rem;
+    border-radius: 4px;
+    margin-top: 1rem;
+}
+
+/* Loading State */
+.o_loading {
+    position: relative;
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+.o_loading::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #1a73e8;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    transform: translate(-50%, -50%);
+}
+
+@keyframes spin {
+    0% { transform: translate(-50%, -50%) rotate(0deg); }
+    100% { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+/* Connect/Disconnect Button States */
+.o_connect_wallet,
+.o_disconnect_wallet {
+    width: 100%;
+    margin-top: 1rem;
+}
+
+/* Gas Estimation Display */
+.o_gas_estimate,
+.o_total_cost {
+    font-family: monospace;
+    color: #5f6368;
+}
+
+/* Toast Notifications */
+.o_notification {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 1050;
+    max-width: 350px;
+}
+
+.o_notification .toast {
+    background: white;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}

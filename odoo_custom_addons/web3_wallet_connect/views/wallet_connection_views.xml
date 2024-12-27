@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_wallet_connection_tree" model="ir.ui.view">
+        <field name="name">wallet.connection.tree</field>
+        <field name="model">wallet.connection</field>
+        <field name="arch" type="xml">
+            <tree decoration-success="state=='connected'"
+                  decoration-danger="state=='error'"
+                  decoration-muted="state=='disconnected'">
+                <field name="name"/>
+                <field name="user_id"/>
+                <field name="connection_type"/>
+                <field name="eth_address"/>
+                <field name="nostr_public_key"/>
+                <field name="state"/>
+                <field name="last_connection"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_wallet_connection_form" model="ir.ui.view">
+        <field name="name">wallet.connection.form</field>
+        <field name="model">wallet.connection</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_connect" type="object" 
+                            string="Connect" class="btn-primary"
+                            attrs="{'invisible': [('state', '=', 'connected')]}"/>
+                    <button name="disconnect" type="object" 
+                            string="Disconnect" class="btn-secondary"
+                            attrs="{'invisible': [('state', '!=', 'connected')]}"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="connected,disconnected,error"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="user_id"/>
+                            <field name="connection_type"/>
+                            <field name="last_connection"/>
+                        </group>
+                        <group attrs="{'invisible': [('connection_type', '!=', 'web3')]}">
+                            <field name="eth_address"/>
+                            <field name="chain_id"/>
+                            <field name="balance"/>
+                            <field name="last_block_check"/>
+                        </group>
+                        <group attrs="{'invisible': [('connection_type', '!=', 'nostr')]}">
+                            <field name="nostr_public_key"/>
+                            <field name="connected_relays"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Error Log" 
+                              attrs="{'invisible': [('last_error', '=', False)]}">
+                            <field name="last_error"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_wallet_connection" model="ir.actions.act_window">
+        <field name="name">Wallet Connections</field>
+        <field name="res_model">wallet.connection</field>
+        <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No wallet connections yet!
+            </p>
+            <p>
+                Connect your Web3 or Nostr wallet to get started.
+            </p>
+        </field>
+    </record>
+
+    <menuitem id="menu_wallet_connection"
+              name="Connections"
+              parent="menu_wallet_root"
+              action="action_wallet_connection"
+              sequence="20"/>
+</odoo>

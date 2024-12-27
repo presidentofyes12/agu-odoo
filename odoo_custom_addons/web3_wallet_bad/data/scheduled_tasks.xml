@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Update Transaction Status -->
+        <record id="ir_cron_update_transaction_status" model="ir.cron">
+            <field name="name">Update Wallet Transaction Status</field>
+            <field name="model_id" ref="model_wallet_transaction"/>
+            <field name="state">code</field>
+            <field name="code">model.update_pending_transactions()</field>
+            <field name="interval_number">2</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Update Gas Prices -->
+        <record id="ir_cron_update_gas_prices" model="ir.cron">
+            <field name="name">Update Network Gas Prices</field>
+            <field name="model_id" ref="model_wallet_config"/>
+            <field name="state">code</field>
+            <field name="code">model.update_gas_prices()</field>
+            <field name="interval_number">5</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>

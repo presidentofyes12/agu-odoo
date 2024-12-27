@@ -1,0 +1,9 @@
+WARNING: Active Record does not support composite primary key.
+
+security_findings has composite primary key. Composite primary key is ignored.
+Starting token creation...
+Found user: #<User id:1 @root>
+Token object created: #<PersonalAccessToken id: nil, user_id: 1, name: "Repository setup token", revoked: false, expires_at: nil, created_at: nil, updated_at: nil, scopes: ["api", "read_user", "read_repository", "write_repository"], impersonation: false, token_digest: nil, expire_notification_delivered: false, last_used_at: nil, after_expiry_notification_delivered: false, previous_personal_access_token_id: nil, advanced_scopes: nil, organization_id: 1, seven_days_notification_sent_at: nil, thirty_days_notification_sent_at: nil, sixty_days_notification_sent_at: nil>
+Token save failed:
+Expiration date can't be blank
+#<ActiveModel::Errors [#<ActiveModel::Error attribute=expires_at, type=blank, options={:unless=>:allow_expires_at_to_be_empty?, :on=>:create}>]>

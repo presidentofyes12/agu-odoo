@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Tree View -->
+    <record id="view_dao_config_tree" model="ir.ui.view">
+        <field name="name">dao.config.tree</field>
+        <field name="model">dao.config</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="network_id"/>
+                <field name="contract_address"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Form View -->
+    <record id="view_dao_config_form" model="ir.ui.view">
+        <field name="name">dao.config.form</field>
+        <field name="model">dao.config</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="toggle_active" type="object"
+                                class="oe_stat_button" icon="fa-archive">
+                            <field name="active" widget="boolean_button"
+                                options="{&quot;terminology&quot;: &quot;archive&quot;}"/>
+                        </button>
+                        <button name="test_connection" 
+                                type="object"
+                                class="oe_stat_button" 
+                                icon="fa-plug"
+                                string="Test Connection"/>
+                    </div>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="e.g. Sepolia Testnet"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="network_id"/>
+                            <field name="rpc_url" placeholder="Enter RPC URL for selected network"/>
+                            <field name="contract_address"/>
+                        </group>
+                        <group>
+                            <field name="gas_price_strategy"/>
+                            <field name="gas_limit"/>
+                        </group>
+                    </group>
+                    <div class="alert alert-info" role="alert" attrs="{'invisible': [('network_id', '=', False)]}">
+                        <p><strong>Network Information:</strong></p>
+                        <p>Currency: <field name="network_currency" class="oe_inline"/></p>
+                        <p>Explorer: <field name="explorer_url" class="oe_inline" widget="url"/></p>
+                    </div>
+                    <notebook>
+                        <page string="Contract ABI" name="contract_abi">
+                            <field name="contract_abi" widget="text" options="{'rows': 20}"/>
+                            <div class="alert alert-info" role="alert">
+                                <p><strong>Note:</strong> Paste your contract ABI here in JSON format.</p>
+                                <p>Example format: [{"type": "constructor", "inputs": []}, ...]</p>
+                            </div>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- Search View -->
+    <record id="view_dao_config_search" model="ir.ui.view">
+        <field name="name">dao.config.search</field>
+        <field name="model">dao.config</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="contract_address"/>
+                <filter string="Active" name="active" domain="[('active', '=', True)]"/>
+                <filter string="Archived" name="inactive" domain="[('active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Network" name="group_by_network" context="{'group_by': 'network_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- Action Window -->
+    <record id="action_dao_config" model="ir.actions.act_window">
+        <field name="name">DAO Configurations</field>
+        <field name="res_model">dao.config</field>
+        <field name="view_mode">tree,form</field>
+        <field name="search_view_id" ref="view_dao_config_search"/>
+        <field name="context">{'search_default_active': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first DAO configuration!
+            </p>
+            <p>
+                Add a new configuration to connect with your DAO smart contract.
+            </p>
+        </field>
+    </record>
+
+    <!-- Menu Items -->
+    <menuitem id="menu_dao_root"
+              name="DAO"
+              sequence="50"/>
+
+    <menuitem id="menu_dao_config_root"
+              name="Configuration"
+              parent="menu_dao_root"
+              sequence="100"/>
+
+    <menuitem id="menu_dao_config"
+              name="DAO Configurations"
+              parent="menu_dao_config_root"
+              action="action_dao_config"
+              sequence="10"/>
+
+    <!-- Transaction Views -->
+    <record id="view_dao_transaction_tree" model="ir.ui.view">
+        <field name="name">dao.transaction.tree</field>
+        <field name="model">dao.transaction</field>
+        <field name="arch" type="xml">
+            <tree decoration-info="status=='pending'" decoration-success="status=='completed'" decoration-danger="status=='failed'">
+                <field name="name"/>
+                <field name="transaction_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="status"/>
+                <field name="timestamp"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Transaction Form View -->
+    <record id="view_dao_transaction_form" model="ir.ui.view">
+        <field name="name">dao.transaction.form</field>
+        <field name="model">dao.transaction</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="submit_transaction_with_key" 
+                            string="Submit" 
+                            type="object" 
+                            class="oe_highlight" 
+                            attrs="{'invisible': [('status', '!=', 'draft')]}"/>
+                    <button name="retry_failed_transaction" 
+                            string="Retry" 
+                            type="object" 
+                            attrs="{'invisible': [('status', '!=', 'failed')]}"/>
+                    <button name="action_cancel" 
+                            string="Cancel" 
+                            type="object" 
+                            attrs="{'invisible': [('status', 'not in', ['draft', 'failed'])]}"/>
+                    <field name="status" widget="statusbar" 
+                        statusbar_visible="draft,pending,completed,failed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="Transaction Description"
+                                attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="user_id" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="from_address" readonly="1"/>
+                            <field name="to_address" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="value" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="eth_balance"/>
+                            <field name="is_contract_interaction" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                        </group>
+                        <group>
+                            <field name="gas_limit" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="gas_price" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="estimated_fee"/>
+                            <field name="total_amount"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Sign Transaction" name="sign_transaction">
+                            <group>
+                                <field name="transaction_type" widget="radio" string="Signing Method"/>
+                                <field name="private_key" password="True" 
+                                    attrs="{'invisible': [('transaction_type', '!=', 'private_key')],
+                                        'required': [('transaction_type', '=', 'private_key')]}"
+                                    placeholder="Enter your private key"/>
+                                <field name="wallet_file" 
+                                    attrs="{'invisible': [('transaction_type', '!=', 'wallet_file')],
+                                        'required': [('transaction_type', '=', 'wallet_file')]}"/>
+                                <field name="wallet_password" password="True"
+                                    attrs="{'invisible': [('transaction_type', '!=', 'wallet_file')],
+                                        'required': [('transaction_type', '=', 'wallet_file')]}"
+                                    placeholder="Enter wallet password"/>
+                            </group>
+                            <div class="alert alert-info" role="alert">
+                                <p><strong>Note:</strong> Private keys and wallet files are only used to sign the transaction and are not stored.</p>
+                            </div>
+                        </page>
+                        <page string="Contract Interaction" attrs="{'invisible': [('is_contract_interaction', '=', False)]}">
+                            <group>
+                                <field name="contract_method" 
+                                    attrs="{'required': [('is_contract_interaction', '=', True)]}"/>
+                                <field name="raw_input"/>
+                            </group>
+                        </page>
+                        <page string="Transaction Details">
+                            <group>
+                                <field name="transaction_hash" readonly="1"/>
+                                <field name="gas_used" readonly="1"/>
+                                <field name="nonce" readonly="1"/>
+                                <field name="error_message" readonly="1" 
+                                    attrs="{'invisible': [('error_message', '=', False)]}"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- Transaction Tree View -->
+    <record id="view_dao_transaction_tree" model="ir.ui.view">
+        <field name="name">dao.transaction.tree</field>
+        <field name="model">dao.transaction</field>
+        <field name="arch" type="xml">
+            <tree decoration-info="status=='draft'" 
+                decoration-warning="status=='pending'" 
+                decoration-success="status=='completed'" 
+                decoration-danger="status=='failed'">
+                <field name="name"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="total_amount"/>
+                <field name="status"/>
+                <field name="transaction_hash"/>
+                <field name="timestamp"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Transaction Action Window -->
+    <record id="action_dao_transaction" model="ir.actions.act_window">
+        <field name="name">Transactions</field>
+        <field name="res_model">dao.transaction</field>
+        <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No transactions yet!
+            </p>
+            <p>
+                Transactions will appear here when you interact with the DAO.
+            </p>
+        </field>
+    </record>
+
+    <!-- Transaction Menu -->
+    <menuitem id="menu_dao_transaction"
+              name="Transactions"
+              parent="menu_dao_root"
+              action="action_dao_transaction"
+              sequence="20"/>
+</odoo>

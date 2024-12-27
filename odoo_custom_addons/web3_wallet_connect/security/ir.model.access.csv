@@ -1,0 +1,7 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_wallet_config_user,wallet.config.user,model_wallet_config,web3_wallet_connect.group_wallet_user,1,0,0,0
+access_wallet_config_admin,wallet.config.admin,model_wallet_config,web3_wallet_connect.group_wallet_admin,1,1,1,1
+access_wallet_connection_user,wallet.connection.user,model_wallet_connection,web3_wallet_connect.group_wallet_user,1,1,1,0
+access_wallet_connection_admin,wallet.connection.admin,model_wallet_connection,web3_wallet_connect.group_wallet_admin,1,1,1,1
+access_wallet_import_wizard_user,wallet.import.wizard.user,model_wallet_import_wizard,web3_wallet_connect.group_wallet_user,1,1,1,0
+access_wallet_settings_admin,wallet.settings.admin,model_res_config_settings,web3_wallet_connect.group_wallet_admin,1,1,1,1

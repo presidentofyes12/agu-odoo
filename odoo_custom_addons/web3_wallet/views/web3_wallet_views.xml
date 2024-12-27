@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Wallet Views -->
+    <record id="view_web3_wallet_tree" model="ir.ui.view">
+        <field name="name">web3.wallet.tree</field>
+        <field name="model">web3.wallet</field>
+        <field name="arch" type="xml">
+            <tree string="Wallets">
+                <field name="name"/>
+                <field name="address"/>
+                <field name="network_id"/>
+                <field name="balance"/>
+                <field name="state" widget="badge" decoration-success="state == 'connected'" decoration-danger="state == 'disconnected'"/>
+                <field name="last_sync"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_web3_wallet_form" model="ir.ui.view">
+        <field name="name">web3.wallet.form</field>
+        <field name="model">web3.wallet</field>
+        <field name="arch" type="xml">
+            <form string="Wallet">
+                <header>
+                    <button name="action_connect_wallet" 
+                            string="Connect" 
+                            type="object" 
+                            class="oe_highlight"
+                            attrs="{'invisible': [('state', '=', 'connected')]}"/>
+                    <button name="action_disconnect_wallet" 
+                            string="Disconnect" 
+                            type="object"
+                            attrs="{'invisible': [('state', '=', 'disconnected')]}"/>
+                    <button name="action_send_transaction" 
+                            string="Send" 
+                            type="object"
+                            class="btn-primary"
+                            attrs="{'invisible': [('state', '!=', 'connected')]}"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="Wallet Name"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="address"/>
+                            <field name="network_id"/>
+                            <field name="user_id" groups="web3_wallet.group_web3_wallet_manager"/>
+                        </group>
+                        <group>
+                            <field name="balance"/>
+                            <field name="last_sync"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Transactions" name="transactions">
+                            <field name="transaction_ids">
+                                <tree>
+                                    <field name="create_date"/>
+                                    <field name="tx_hash"/>
+                                    <field name="from_address"/>
+                                    <field name="to_address"/>
+                                    <field name="value"/>
+                                    <field name="status"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_web3_wallet" model="ir.actions.act_window">
+        <field name="name">Wallets</field>
+        <field name="res_model">web3.wallet</field>
+        <field name="view_mode">tree,form</field>
+        <field name="domain">[('user_id', '=', uid)]</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Connect your first Web3 wallet!
+            </p>
+            <p>
+                Click the create button to add a new wallet.
+            </p>
+        </field>
+    </record>
+
+    <!-- Transaction Views -->
+    <record id="view_web3_transaction_tree" model="ir.ui.view">
+        <field name="name">web3.transaction.tree</field>
+        <field name="model">web3.transaction</field>
+        <field name="arch" type="xml">
+            <tree string="Transactions" create="false">
+                <field name="create_date"/>
+                <field name="wallet_id"/>
+                <field name="tx_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="status" widget="badge" decoration-success="status == 'confirmed'" decoration-warning="status == 'pending'" decoration-danger="status == 'failed'"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_web3_transaction_form" model="ir.ui.view">
+        <field name="name">web3.transaction.form</field>
+        <field name="model">web3.transaction</field>
+        <field name="arch" type="xml">
+            <form string="Transaction" create="false">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="wallet_id"/>
+                            <field name="tx_hash"/>
+                            <field name="from_address"/>
+                            <field name="to_address"/>
+                        </group>
+                        <group>
+                            <field name="value"/>
+                            <field name="gas_price"/>
+                            <field name="gas_used"/>
+                            <field name="status"/>
+                            <field name="network_id"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_web3_transaction" model="ir.actions.act_window">
+        <field name="name">Transactions</field>
+        <field name="res_model">web3.transaction</field>
+        <field name="view_mode">tree,form</field>
+        <field name="domain">[('wallet_id.user_id', '=', uid)]</field>
+    </record>
+
+    <!-- Network Views -->
+    <record id="view_web3_network_tree" model="ir.ui.view">
+        <field name="name">web3.network.tree</field>
+        <field name="model">web3.network</field>
+        <field name="arch" type="xml">
+            <tree string="Networks">
+                <field name="name"/>
+                <field name="chain_id"/>
+                <field name="currency_symbol"/>
+                <field name="rpc_url"/>
+                <field name="explorer_url"/>
+                <field name="is_active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_web3_network_form" model="ir.ui.view">
+        <field name="name">web3.network.form</field>
+        <field name="model">web3.network</field>
+        <field name="arch" type="xml">
+            <form string="Network">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="chain_id"/>
+                            <field name="currency_symbol"/>
+                        </group>
+                        <group>
+                            <field name="rpc_url"/>
+                            <field name="explorer_url"/>
+                            <field name="is_active"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_web3_network" model="ir.actions.act_window">
+        <field name="name">Networks</field>
+        <field name="res_model">web3.network</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+</odoo>

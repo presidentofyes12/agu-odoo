@@ -1,0 +1,1606 @@
+Home dir: ~/oldhome/home/impromise/Downloads/Telegram Desktop/nostr-w-relay-main/agu-app/src/odoo-nostr-project/odoo_custom_addons/dao_core/
+
+=== ./models/__init__.py ===
+from . import dao_config
+from . import dao_member
+from . import dao_transaction
+from . import res_config_settings
+=== ./models/dao_config.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError, ValidationError
+from web3 import Web3
+import json
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class DAOConfiguration(models.Model):
+    _name = 'dao.config'
+    _description = 'DAO Configuration'
+    _inherit = ['mail.thread']
+
+    name = fields.Char(required=True, tracking=True)
+    network_id = fields.Selection([
+        # Mainnets
+        ('1', 'Ethereum Mainnet'),
+        ('137', 'Polygon Mainnet'),
+        ('56', 'BSC Mainnet'),
+        ('42161', 'Arbitrum One'),
+        ('10', 'Optimism'),
+        ('43114', 'Avalanche C-Chain'),
+        # Testnets
+        ('11155111', 'Sepolia Testnet'),
+        ('80001', 'Polygon Mumbai'),
+        ('97', 'BSC Testnet'),
+        ('421613', 'Arbitrum Goerli'),
+        ('420', 'Optimism Goerli'),
+        ('43113', 'Avalanche Fuji'),
+    ], required=True, tracking=True, string='Network')
+
+    rpc_url = fields.Char('RPC URL', required=True, tracking=True)
+    contract_address = fields.Char('Smart Contract Address', required=True, tracking=True)
+    contract_abi = fields.Text('Contract ABI', required=True)
+    gas_limit = fields.Integer('Gas Limit', default=8000000)
+    active = fields.Boolean(default=True, tracking=True)
+    
+    # Add computed fields for network information
+    network_currency = fields.Char(string='Network Currency', compute='_compute_network_info', store=True)
+    explorer_url = fields.Char(string='Explorer URL', compute='_compute_network_info', store=True)
+
+    _sql_constraints = [
+        ('active_unique', 'UNIQUE(active)', 
+         'Only one configuration can be active at a time!')
+    ]
+
+    gas_price_strategy = fields.Selection([
+        ('legacy', 'Legacy'),
+        ('eip1559', 'EIP-1559')
+    ], string='Gas Price Strategy', required=True, default='legacy')  # Add default value
+
+    def get_web3_connection(self):
+        """Get Web3 connection using current configuration"""
+        if not self:
+            # If called as a model method, find active config
+            config = self.search([('active', '=', True)], limit=1)
+            if not config:
+                raise UserError("No active DAO configuration found")
+        else:
+            config = self
+    
+        try:
+            provider = Web3.HTTPProvider(config.rpc_url)
+            web3 = Web3(provider)
+            if not web3.is_connected():
+                raise UserError("Could not connect to blockchain node")
+            return web3
+        except Exception as e:
+            raise UserError(f"Failed to establish Web3 connection: {str(e)}")
+
+    def get_gas_price(self):
+        """Get current gas price based on strategy"""
+        web3 = self.get_web3_connection()
+        if self.gas_price_strategy == 'eip1559':
+            block = web3.eth.get_block('latest')
+            return {
+                'maxFeePerGas': block['baseFeePerGas'] * 2,
+                'maxPriorityFeePerGas': web3.eth.max_priority_fee
+            }
+        return {'gasPrice': web3.eth.gas_price}
+
+    # In dao_config.py
+    def update_gas_prices(self):
+        """Update current gas prices from network"""
+        web3 = self.get_web3_connection()
+        # Implementation here
+        pass
+
+    def sync_blockchain_data(self):
+        """Synchronize blockchain data with Odoo"""
+        # Implementation here
+        pass
+
+    @api.model
+    def get_contract(self):
+        """Get contract instance using active configuration"""
+        config = self.search([('active', '=', True)], limit=1)
+        if not config:
+            raise ValueError("No active DAO configuration found")
+        
+        web3 = self.get_web3_connection()
+        contract_abi = json.loads(config.contract_abi)
+        return web3.eth.contract(
+            address=config.contract_address,
+            abi=contract_abi
+        )
+
+    # Add to dao_config.py
+    def call_contract_method(self, method_name, *args, **kwargs):
+        """Generic contract method caller with error handling"""
+        contract = self.get_contract()
+        try:
+            method = getattr(contract.functions, method_name)
+            return method(*args, **kwargs).call()
+        except Exception as e:
+            raise UserError(f"Contract call failed: {str(e)}")
+
+    #@api.multi
+    def test_connection(self):
+        """Test the connection to the blockchain node"""
+        self.ensure_one()
+        try:
+            web3 = self.get_web3_connection()
+            if web3.is_connected():
+                status = 'success'
+                message = 'Successfully connected to blockchain node'
+            else:
+                status = 'warning'
+                message = 'Could not establish connection'
+        except Exception as e:
+            status = 'danger'
+            message = f'Connection failed: {str(e)}'
+    
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Connection Test',
+                'message': message,
+                'type': status,
+                'sticky': False,
+            }
+        }
+
+    def send_contract_transaction(self, method_name, *args, **kwargs):
+        """Generic contract transaction sender"""
+        contract = self.get_contract()
+        try:
+            method = getattr(contract.functions, method_name)
+            gas_params = self.get_gas_price()
+            tx_params = {
+                'from': kwargs.pop('from_address'),
+                **gas_params
+            }
+            return method(*args, **kwargs).transact(tx_params)
+        except Exception as e:
+            raise UserError(f"Transaction failed: {str(e)}")
+
+    @api.constrains('contract_abi')
+    def _check_contract_abi(self):
+        """Validate contract ABI JSON format"""
+        for record in self:
+            if record.contract_abi:
+                try:
+                    # Try to parse the ABI as JSON
+                    abi = json.loads(record.contract_abi)
+                    # Verify it's a list
+                    if not isinstance(abi, list):
+                        raise ValidationError("Contract ABI must be a JSON array")
+                    # Basic ABI structure validation
+                    for item in abi:
+                        if not isinstance(item, dict):
+                            raise ValidationError("Invalid ABI format: each entry must be an object")
+                        if 'type' not in item:
+                            raise ValidationError("Invalid ABI format: missing 'type' field in entry")
+                except json.JSONDecodeError:
+                    raise ValidationError("Contract ABI must be valid JSON")
+                except Exception as e:
+                    raise ValidationError(f"Invalid Contract ABI format: {str(e)}")
+    
+    # Add a helper method to format ABI
+    def format_abi(self):
+        """Format the ABI JSON for better readability"""
+        if self.contract_abi:
+            try:
+                abi = json.loads(self.contract_abi)
+                self.contract_abi = json.dumps(abi, indent=2)
+            except Exception:
+                pass  # If formatting fails, keep original
+
+    def get_network_currency(self):
+        """Get native currency symbol for selected network"""
+        currencies = {
+            # Mainnets
+            '1': 'ETH',
+            '137': 'MATIC',
+            '56': 'BNB',
+            '42161': 'ETH',
+            '10': 'ETH',
+            '43114': 'AVAX',
+            # Testnets
+            '11155111': 'SEP',
+            '80001': 'tMATIC',
+            '97': 'tBNB',
+            '421613': 'AGOR',
+            '420': 'ETH',
+            '43113': 'AVAX',
+        }
+        return currencies.get(self.network_id, 'ETH')
+
+    @api.depends('network_id')
+    def _compute_network_info(self):
+        """Compute network currency and explorer URL"""
+        currencies = {
+            # Mainnets
+            '1': 'ETH',
+            '137': 'MATIC',
+            '56': 'BNB',
+            '42161': 'ETH',
+            '10': 'ETH',
+            '43114': 'AVAX',
+            # Testnets
+            '11155111': 'SEP',
+            '80001': 'tMATIC',
+            '97': 'tBNB',
+            '421613': 'AGOR',
+            '420': 'ETH',
+            '43113': 'AVAX',
+        }
+        
+        explorers = {
+            # Mainnets
+            '1': 'https://etherscan.io',
+            '137': 'https://polygonscan.com',
+            '56': 'https://bscscan.com',
+            '42161': 'https://arbiscan.io',
+            '10': 'https://optimistic.etherscan.io',
+            '43114': 'https://snowtrace.io',
+            # Testnets
+            '11155111': 'https://sepolia.etherscan.io',
+            '80001': 'https://mumbai.polygonscan.com',
+            '97': 'https://testnet.bscscan.com',
+            '421613': 'https://goerli.arbiscan.io',
+            '420': 'https://goerli-optimism.etherscan.io',
+            '43113': 'https://testnet.snowtrace.io',
+        }
+        
+        for record in self:
+            record.network_currency = currencies.get(record.network_id, 'ETH')
+            record.explorer_url = explorers.get(record.network_id, '')
+
+    def get_explorer_url(self):
+        """Get block explorer URL for selected network"""
+        explorers = {
+            # Mainnets
+            '1': 'https://etherscan.io',
+            '137': 'https://polygonscan.com',
+            '56': 'https://bscscan.com',
+            '42161': 'https://arbiscan.io',
+            '10': 'https://optimistic.etherscan.io',
+            '43114': 'https://snowtrace.io',
+            # Testnets
+            '11155111': 'https://sepolia.etherscan.io',
+            '80001': 'https://mumbai.polygonscan.com',
+            '97': 'https://testnet.bscscan.com',
+            '421613': 'https://goerli.arbiscan.io',
+            '420': 'https://goerli-optimism.etherscan.io',
+            '43113': 'https://testnet.snowtrace.io',
+        }
+        return explorers.get(self.network_id, '')
+
+    @api.onchange('network_id')
+    def _onchange_network_id(self):
+        """Provide default RPC URL based on selected network"""
+        if self.network_id:
+            rpc_urls = {
+                # Mainnets
+                '1': 'https://mainnet.infura.io/v3/YOUR-PROJECT-ID',
+                '137': 'https://polygon-rpc.com',
+                '56': 'https://bsc-dataseed.binance.org',
+                '42161': 'https://arb1.arbitrum.io/rpc',
+                '10': 'https://mainnet.optimism.io',
+                '43114': 'https://api.avax.network/ext/bc/C/rpc',
+                # Testnets
+                '11155111': 'https://sepolia.infura.io/v3/YOUR-PROJECT-ID',
+                '80001': 'https://rpc-mumbai.maticvigil.com',
+                '97': 'https://data-seed-prebsc-1-s1.binance.org:8545',
+                '421613': 'https://goerli-rollup.arbitrum.io/rpc',
+                '420': 'https://goerli.optimism.io',
+                '43113': 'https://api.avax-test.network/ext/bc/C/rpc',
+            }
+            self.rpc_url = rpc_urls.get(self.network_id, '')
+
+    @api.onchange('contract_abi')
+    def _onchange_contract_abi(self):
+        """Format ABI when it changes"""
+        self.format_abi()
+    
+class DAOEventFilter(models.Model):
+    _name = 'dao.event.filter'
+    
+    config_id = fields.Many2one('dao.config', required=True)
+    event_name = fields.Char(required=True)
+    active = fields.Boolean(default=True)
+=== ./models/dao_member.py ===
+# models/dao_member.py
+from odoo import models, fields, api
+from odoo.exceptions import UserError, ValidationError
+from eth_account import Account
+from eth_keys import keys
+import json
+import logging
+from cryptography.fernet import Fernet
+import base64
+
+_logger = logging.getLogger(__name__)
+
+class DAOMember(models.Model):
+    _inherit = 'res.users'
+
+    # once transactions work regulate private key viewing to prevent anyone from being able to see other members private keys
+
+    eth_address = fields.Char('Ethereum Address')
+    #eth_private_key = fields.Char('Private Key') # , groups='dao_core.group_dao_admin'
+    eth_private_key = fields.Char(
+        'Private Key', 
+        groups=False,  # Make field visible to all users
+        copy=False,    # Security measure: don't copy during duplicate
+        tracking=True  # Track changes to the field
+    )
+    member_type = fields.Selection([
+        ('regular', 'Regular Member'),
+        ('admin', 'Admin'),
+        ('auditor', 'Auditor')
+    ], default='regular')
+    dao_ids = fields.Many2many('dao.config', string='Associated DAOs')
+    active_dao_id = fields.Many2one('dao.config', string='Active DAO')
+    encrypted_private_key = fields.Binary('Encrypted Private Key', groups='dao_core.group_dao_admin')
+    
+    # New fields
+    wallet_balance = fields.Float('Wallet Balance', compute='_compute_wallet_balance')
+    transaction_count = fields.Integer('Transaction Count', compute='_compute_transaction_count')
+    last_activity = fields.Datetime('Last Activity')
+    is_wallet_connected = fields.Boolean('Wallet Connected', default=False)
+
+    @api.constrains('eth_address')
+    def _check_eth_address(self):
+        for record in self:
+            if record.eth_address and not self.env['dao.config'].get_web3_connection().is_address(record.eth_address):
+                raise ValidationError("Invalid Ethereum address format")
+
+    def create_wallet(self):
+        """Create new Ethereum wallet with enhanced security"""
+        try:
+            web3_manager = self.env['dao.config'].get_web3_manager()
+            wallet_data = web3_manager.create_wallet()
+            
+            self.write({
+                'eth_address': wallet_data['address'],
+                'encrypted_private_key': wallet_data['encrypted_key'],
+                'is_wallet_connected': True,
+                'last_activity': fields.Datetime.now()
+            })
+            
+            # Create initial DAO membership
+            if self.env.context.get('default_dao_id'):
+                self.dao_ids = [(4, self.env.context['default_dao_id'])]
+                self.active_dao_id = self.env.context['default_dao_id']
+            
+            return {'address': wallet_data['address']}
+            
+        except Exception as e:
+            _logger.error(f"Wallet creation failed: {str(e)}")
+            raise UserError(f"Failed to create wallet: {str(e)}")
+
+    @api.depends('eth_address')
+    def _compute_wallet_balance(self):
+        """Compute current wallet balance"""
+        web3 = self.env['dao.config'].get_web3_connection()
+        for record in self:
+            if record.eth_address:
+                try:
+                    record.wallet_balance = web3.eth.get_balance(record.eth_address)
+                except Exception as e:
+                    _logger.error(f"Balance check failed: {str(e)}")
+                    record.wallet_balance = 0
+            else:
+                record.wallet_balance = 0
+
+    @api.depends('eth_address')
+    def _compute_transaction_count(self):
+        """Compute number of transactions"""
+        for record in self:
+            record.transaction_count = self.env['dao.transaction'].search_count([
+                '|',
+                ('from_address', '=', record.eth_address),
+                ('to_address', '=', record.eth_address)
+            ])
+
+    def sign_transaction(self, transaction_data):
+        """Sign transaction with member's private key"""
+        try:
+            if not self.encrypted_private_key:
+                raise UserError("No private key available")
+                
+            web3_manager = self.env['dao.config'].get_web3_manager()
+            private_key = web3_manager._decrypt_private_key(self.encrypted_private_key)
+            
+            signed_tx = web3_manager.sign_transaction(transaction_data, private_key)
+            return signed_tx
+            
+        except Exception as e:
+            _logger.error(f"Transaction signing failed: {str(e)}")
+            raise UserError(f"Failed to sign transaction: {str(e)}")
+
+    def send_transaction(self, to_address, value, data=None):
+        """Send transaction from member's wallet"""
+        try:
+            if not self.eth_address:
+                raise UserError("No wallet address available")
+                
+            web3_manager = self.env['dao.config'].get_web3_manager()
+            tx_params = web3_manager.create_transaction(
+                self.eth_address,
+                to_address,
+                value,
+                data
+            )
+            
+            signed_tx = self.sign_transaction(tx_params)
+            tx_hash = web3_manager.send_transaction(signed_tx)
+            
+            # Create transaction record
+            self.env['dao.transaction'].create({
+                'name': f"Transaction from {self.name}",
+                'transaction_hash': tx_hash,
+                'from_address': self.eth_address,
+                'to_address': to_address,
+                'value': value,
+                'status': 'pending'
+            })
+            
+            self.last_activity = fields.Datetime.now()
+            return tx_hash
+            
+        except Exception as e:
+            _logger.error(f"Transaction sending failed: {str(e)}")
+            raise UserError(f"Failed to send transaction: {str(e)}")
+
+    def connect_external_wallet(self, address):
+        """Connect existing external wallet"""
+        try:
+            web3 = self.env['dao.config'].get_web3_connection()
+            if not web3.is_address(address):
+                raise ValidationError("Invalid Ethereum address")
+                
+            self.write({
+                'eth_address': address,
+                'is_wallet_connected': True,
+                'last_activity': fields.Datetime.now()
+            })
+            
+        except Exception as e:
+            _logger.error(f"External wallet connection failed: {str(e)}")
+            raise UserError(f"Failed to connect wallet: {str(e)}")
+        
+    @api.model
+    def _get_encryption_key(self):
+        """Get or create encryption key from system parameters"""
+        param = self.env['ir.config_parameter'].sudo()
+        key = param.get_param('dao.encryption_key')
+        if not key:
+            key = Fernet.generate_key()
+            param.set_param('dao.encryption_key', key.decode())
+        return key if isinstance(key, bytes) else key.encode()
+
+    def clear_private_key(self):
+        """Clear private key from memory after use"""
+        self.eth_private_key = False
+        
+    @api.model
+    def rotate_encryption_key(self):
+        """Rotate encryption key and re-encrypt existing keys"""
+        # Implementation for key rotation
+        pass
+
+    @api.model
+    def _encrypt_private_key(self, private_key):
+        if not private_key:
+            return False
+        try:
+            # Validate private key format
+            if len(private_key.replace('0x', '')) != 64:
+                raise ValidationError("Invalid private key format")
+                
+            f = Fernet(self._get_encryption_key())
+            return base64.b64encode(f.encrypt(private_key.encode())).decode()
+        except Exception as e:
+            _logger.error(f"Private key encryption failed: {str(e)}")
+            raise UserError("Failed to secure private key")
+
+    def _decrypt_private_key(self):
+        """Decrypt stored private key"""
+        if not self.eth_private_key:
+            return False
+        try:
+            f = Fernet(self._get_encryption_key())
+            encrypted = base64.b64decode(self.eth_private_key.encode())
+            return f.decrypt(encrypted).decode()
+        except Exception as e:
+            _logger.error(f"Failed to decrypt private key: {str(e)}")
+            raise UserError("Could not decrypt private key")
+
+    @api.model
+    def create(self, vals):
+        if vals.get('eth_private_key'):
+            vals['eth_private_key'] = self._encrypt_private_key(vals['eth_private_key'])
+        return super(DAOMember, self).create(vals)
+
+    def write(self, vals):
+        if vals.get('eth_private_key'):
+            vals['eth_private_key'] = self._encrypt_private_key(vals['eth_private_key'])
+        return super(DAOMember, self).write(vals)
+
+    def test_wallet_connection(self):
+        """Test wallet connection and balance"""
+        self.ensure_one()
+        try:
+            web3 = self.env['dao.config'].get_web3_connection()
+            balance = web3.eth.get_balance(self.eth_address)
+            balance_eth = web3.from_wei(balance, 'ether')
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Wallet Test Successful',
+                    'message': f'Connected successfully. Balance: {balance_eth} ETH',
+                    'type': 'success',
+                    'sticky': False,
+                }
+            }
+        except Exception as e:
+            raise UserError(f"Wallet connection failed: {str(e)}")
+
+    @api.constrains('eth_private_key')
+    def _check_private_key(self):
+        """Validate private key format and derivation of address"""
+        for record in self:
+            if record.eth_private_key and record.eth_address:
+                try:
+                    decrypted_key = record._decrypt_private_key()
+                    if decrypted_key:
+                        # Remove '0x' prefix if present
+                        clean_key = decrypted_key.replace('0x', '')
+                        account = Account.from_key(clean_key)
+                        if account.address.lower() != record.eth_address.lower():
+                            raise ValidationError("Private key does not match the Ethereum address")
+                except Exception as e:
+                    raise ValidationError(f"Invalid private key format: {str(e)}")
+
+    @api.onchange('eth_private_key')
+    def _onchange_private_key(self):
+        """Update address when private key is changed"""
+        if self.eth_private_key:
+            try:
+                # Remove '0x' prefix if present
+                clean_key = self.eth_private_key.replace('0x', '')
+                account = Account.from_key(clean_key)
+                self.eth_address = account.address
+                self.is_wallet_connected = True
+            except Exception as e:
+                raise UserError(f"Invalid private key: {str(e)}")
+
+    def import_existing_wallet(self):
+        """Import an existing wallet using private key"""
+        return {
+            'name': 'Import Existing Wallet',
+            'type': 'ir.actions.act_window',
+            'res_model': 'dao.wallet.import.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_user_id': self.id}
+        }=== ./models/res_config_settings.py ===
+# models/res_config_settings.py
+from odoo import models, fields, api
+
+class ResConfigSettings(models.TransientModel):
+    _inherit = 'res.config.settings'
+
+    default_gas_limit = fields.Integer(
+        string='Default Gas Limit',
+        default=8000000,
+        config_parameter='dao_core.default_gas_limit',
+        default_model='dao.transaction'  # Add this line
+    )
+
+    transaction_confirmation_blocks = fields.Integer(
+        string='Confirmation Blocks',
+        default=12,
+        config_parameter='dao_core.transaction_confirmation_blocks'
+    )
+
+    # Add other blockchain related settings
+    gas_price_update_interval = fields.Integer(
+        string='Gas Price Update Interval (minutes)',
+        default=10,
+        config_parameter='dao_core.gas_price_update_interval'
+    )
+
+    blockchain_sync_interval = fields.Integer(
+        string='Blockchain Sync Interval (minutes)',
+        default=15,
+        config_parameter='dao_core.blockchain_sync_interval'
+    )
+
+    @api.model
+    def get_values(self):
+        res = super(ResConfigSettings, self).get_values()
+        
+        # Get values from system parameters
+        params = self.env['ir.config_parameter'].sudo()
+        res.update(
+            transaction_confirmation_blocks=int(params.get_param('dao_core.transaction_confirmation_blocks', 12)),
+            gas_price_update_interval=int(params.get_param('dao_core.gas_price_update_interval', 10)),
+            blockchain_sync_interval=int(params.get_param('dao_core.blockchain_sync_interval', 15))
+        )
+        return res
+
+    def set_values(self):
+        super(ResConfigSettings, self).set_values()
+        
+        # Store values in system parameters
+        params = self.env['ir.config_parameter'].sudo()
+        params.set_param('dao_core.transaction_confirmation_blocks', self.transaction_confirmation_blocks)
+        params.set_param('dao_core.gas_price_update_interval', self.gas_price_update_interval)
+        params.set_param('dao_core.blockchain_sync_interval', self.blockchain_sync_interval)
+=== ./models/dao_transaction.py ===
+# models/dao_transaction.py
+from odoo import models, fields, api
+from odoo.exceptions import UserError, ValidationError
+import logging
+from datetime import datetime
+from eth_account import Account
+import json
+
+_logger = logging.getLogger(__name__)
+
+# In models/dao_transaction.py
+class DAOTransaction(models.Model):
+    _name = 'dao.transaction'
+    _description = 'DAO Transaction'
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _order = 'create_date desc'
+
+    name = fields.Char('Description', required=True, tracking=True)
+    transaction_hash = fields.Char('Transaction Hash', readonly=True, tracking=True)
+    # Change from Many2one to Char field and compute it from the related user
+    from_address = fields.Char('From Address', required=True, tracking=True)
+    user_id = fields.Many2one('res.users', string='From User', 
+        required=True, default=lambda self: self.env.user,
+        domain=[('eth_address', '!=', False)])
+    to_address = fields.Char('To Address', required=True,
+        states={'draft': [('readonly', False)]}, tracking=True)
+    value = fields.Float('Value (ETH)', required=True,
+        states={'draft': [('readonly', False)]}, tracking=True)
+    
+    status = fields.Selection([
+        ('draft', 'Draft'),
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled')
+    ], default='draft', tracking=True, required=True)
+    
+    gas_limit = fields.Integer('Gas Limit', states={'draft': [('readonly', False)]})
+    gas_price = fields.Float('Gas Price (Gwei)', states={'draft': [('readonly', False)]})
+    gas_used = fields.Integer('Gas Used', readonly=True)
+    nonce = fields.Integer('Nonce', readonly=True)
+    
+    is_contract_interaction = fields.Boolean('Is Contract Call', 
+        states={'draft': [('readonly', False)]}, default=False)
+    contract_method = fields.Char('Contract Method',
+        states={'draft': [('readonly', False)]})
+    raw_input = fields.Text('Contract Data',
+        states={'draft': [('readonly', False)]})
+    
+    transaction_type = fields.Selection([
+        ('private_key', 'Private Key'),
+        ('wallet_file', 'Wallet File')
+    ], string="Signing Method", default='private_key')
+    private_key = fields.Char("Private Key", groups="dao_core.group_dao_admin")
+    wallet_file = fields.Binary("Wallet File")
+    wallet_password = fields.Char("Wallet Password")
+    
+    timestamp = fields.Datetime(default=fields.Datetime.now, readonly=True)
+    error_message = fields.Text('Error Message', readonly=True)
+    eth_balance = fields.Float('Available Balance (ETH)', digits=(18, 8))
+    
+    estimated_fee = fields.Float('Estimated Fee (ETH)', compute='_compute_estimated_fee', store=True)
+    total_amount = fields.Float('Total Amount (ETH)', compute='_compute_total_amount', store=True)
+
+    @api.onchange('user_id')
+    def _onchange_user_id(self):
+        if self.user_id and self.user_id.eth_address:
+            self.from_address = self.user_id.eth_address
+            self._compute_eth_balance()
+
+    _sql_constraints = [
+        ('hash_unique', 'UNIQUE(transaction_hash)', 
+         'Transaction hash must be unique!')
+    ]
+
+    # Add new fields for transaction signing
+    transaction_type = fields.Selection([
+        ('private_key', 'Private Key'),
+        ('wallet_file', 'Wallet File')
+    ], string="Signing Method", default='private_key', required=True)
+    private_key = fields.Char("Private Key", groups="dao_core.group_dao_admin")
+    wallet_file = fields.Binary("Wallet File")
+    wallet_password = fields.Char("Wallet Password")
+
+    @api.depends('gas_limit', 'gas_price')
+    def _compute_estimated_fee(self):
+        for record in self:
+            if record.gas_limit and record.gas_price:
+                record.estimated_fee = (record.gas_limit * record.gas_price * 10**-9)
+            else:
+                record.estimated_fee = 0
+
+    # Add method to manually refresh balance
+    def refresh_balance(self):
+        """Manually refresh the ETH balance"""
+        self._compute_eth_balance()
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'reload',
+        }
+
+    @api.depends('value', 'estimated_fee')
+    def _compute_total_amount(self):
+        for record in self:
+            record.total_amount = record.value + record.estimated_fee
+
+    @api.depends('from_address')
+    def _compute_eth_balance(self):
+        for record in self:
+            try:
+                if record.from_address:
+                    web3 = self.env['dao.config'].get_web3_connection()
+                    balance_wei = web3.eth.get_balance(record.from_address)
+                    record.eth_balance = float(web3.from_wei(balance_wei, 'ether'))
+                else:
+                    record.eth_balance = 0.0
+            except Exception as e:
+                _logger.error(f"Failed to compute ETH balance: {str(e)}")
+                record.eth_balance = 0.0
+
+    @api.onchange('from_address')
+    def _onchange_from_address(self):
+        if self.from_address:
+            config = self.env['dao.config'].search([('active', '=', True)], limit=1)
+            if config:
+                self.gas_limit = config.gas_limit
+                try:
+                    web3 = config.get_web3_connection()
+                    self.gas_price = web3.from_wei(web3.eth.gas_price, 'gwei')
+                except Exception as e:
+                    _logger.error(f"Failed to get gas price: {str(e)}")
+
+    @api.constrains('to_address')
+    def _check_to_address(self):
+        for record in self:
+            if record.to_address:
+                web3 = self.env['dao.config'].get_web3_connection()
+                if not web3.is_address(record.to_address):
+                    raise ValidationError("Invalid recipient address format")
+
+    @api.constrains('value', 'eth_balance', 'status')
+    def _check_balance(self):
+        for record in self:
+            if record.status == 'draft' and record.total_amount > record.eth_balance:
+                raise ValidationError("Insufficient balance for transaction")
+
+    def action_draft(self):
+        """Reset to draft status"""
+        return self.write({'status': 'draft'})
+
+    def action_cancel(self):
+        """Cancel the transaction"""
+        if self.filtered(lambda t: t.status not in ['draft', 'failed']):
+            raise UserError("Only draft or failed transactions can be cancelled")
+        return self.write({'status': 'cancelled'})
+
+    def submit_transaction_with_key(self):
+        """Submit transaction using provided signing method"""
+        self.ensure_one()
+        if self.status != 'draft':
+            raise UserError("Only draft transactions can be submitted")
+
+        try:
+            web3 = self.env['dao.config'].get_web3_connection()
+            
+            if self.total_amount > self.eth_balance:
+                raise UserError("Insufficient balance")
+
+            tx_params = {
+                'nonce': web3.eth.get_transaction_count(self.from_address),
+                'gasPrice': web3.to_wei(self.gas_price, 'gwei'),
+                'gas': self.gas_limit or 21000,
+                'to': self.to_address,
+                'value': web3.to_wei(self.value, 'ether'),
+                'data': self.raw_input if self.is_contract_interaction else b''
+            }
+
+            if self.transaction_type == 'private_key':
+                if not self.private_key:
+                    raise UserError("Private key is required")
+                try:
+                    account = Account.from_key(self.private_key)
+                    if account.address.lower() != self.from_address.lower():
+                        raise UserError("Private key does not match sender address")
+                    signed_tx = web3.eth.account.sign_transaction(tx_params, self.private_key)
+                except Exception as e:
+                    raise UserError(f"Invalid private key: {str(e)}")
+
+            elif self.transaction_type == 'wallet_file':
+                if not self.wallet_file or not self.wallet_password:
+                    raise UserError("Wallet file and password are required")
+                try:
+                    keystore_json = json.loads(self.wallet_file.decode())
+                    private_key = web3.eth.account.decrypt(keystore_json, self.wallet_password)
+                    account = Account.from_key(private_key)
+                    if account.address.lower() != self.from_address.lower():
+                        raise UserError("Wallet address does not match sender address")
+                    signed_tx = web3.eth.account.sign_transaction(tx_params, private_key)
+                except Exception as e:
+                    raise UserError(f"Invalid wallet file or password: {str(e)}")
+
+            tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+
+            self.write({
+                'transaction_hash': web3.to_hex(tx_hash),
+                'status': 'pending',
+                'private_key': False,
+                'wallet_file': False,
+                'wallet_password': False
+            })
+
+        except Exception as e:
+            self.write({
+                'status': 'failed',
+                'error_message': str(e),
+                'private_key': False,
+                'wallet_file': False,
+                'wallet_password': False
+            })
+            raise UserError(f"Transaction failed: {str(e)}")
+
+    @api.onchange('transaction_type')
+    def _onchange_transaction_type(self):
+        """Clear sensitive fields when changing transaction type"""
+        self.private_key = False
+        self.wallet_file = False
+        self.wallet_password = False
+
+
+    def submit_transaction(self):
+        """Submit transaction to blockchain"""
+        self.ensure_one()
+        if self.status != 'draft':
+            raise UserError("Only draft transactions can be submitted")
+
+        try:
+            # Validate balance
+            if self.total_amount > self.eth_balance:
+                raise UserError("Insufficient balance")
+
+            # Get Web3 instance
+            web3 = self.env['dao.config'].get_web3_connection()
+            
+            # Create transaction parameters
+            tx_params = {
+                'from': self.from_address.eth_address,
+                'to': self.to_address,
+                'value': web3.to_wei(self.value, 'ether'),
+                'gas': self.gas_limit or 21000,
+                'gasPrice': web3.to_wei(self.gas_price, 'gwei'),
+                'nonce': web3.eth.get_transaction_count(self.from_address.eth_address),
+            }
+
+            if self.is_contract_interaction and self.raw_input:
+                tx_params['data'] = self.raw_input
+
+            # Send transaction through user's wallet
+            tx_hash = self.from_address.send_transaction(
+                self.to_address, 
+                tx_params['value'],
+                tx_params['data'] if self.is_contract_interaction else None
+            )
+            
+            # Update transaction record
+            self.write({
+                'transaction_hash': tx_hash,
+                'status': 'pending',
+                'nonce': tx_params['nonce']
+            })
+
+        except Exception as e:
+            self.write({
+                'status': 'failed',
+                'error_message': str(e)
+            })
+            raise UserError(f"Transaction failed: {str(e)}")
+
+    def retry_failed_transaction(self):
+        """Retry a failed transaction"""
+        self.ensure_one()
+        if self.status != 'failed':
+            raise UserError("Only failed transactions can be retried")
+        
+        # Create new transaction with updated gas price
+        new_tx = self.copy({
+            'status': 'draft',
+            'transaction_hash': False,
+            'gas_used': False,
+            'error_message': False,
+            'gas_price': self.gas_price * 1.1  # Increase gas price by 10%
+        })
+        
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'dao.transaction',
+            'res_id': new_tx.id,
+            'view_mode': 'form',
+            'target': 'current',
+        }
+
+    def update_pending_transactions(self):
+        """Update status of pending transactions"""
+        pending_txs = self.search([('status', '=', 'pending')])
+        web3 = self.env['dao.config'].get_web3_connection()
+        
+        for transaction in pending_txs:
+            if transaction.transaction_hash:
+                try:
+                    receipt = web3.eth.get_transaction_receipt(transaction.transaction_hash)
+                    if receipt:
+                        status = 'completed' if receipt.status == 1 else 'failed'
+                        transaction.write({
+                            'status': status,
+                            'gas_used': receipt.gasUsed,
+                            'error_message': 'Transaction failed on blockchain' if status == 'failed' else False
+                        })
+                except Exception as e:
+                    _logger.error(f"Failed to update transaction {transaction.transaction_hash}: {str(e)}")
+=== ./__init__.py ===
+from . import models
+from . import controllers
+from . import wizards
+=== ./wizards/__init__.py ===
+from . import dao_contract_wizard
+=== ./wizards/dao_contract_wizard.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+from web3 import Web3
+import json
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class DAOContractWizard(models.TransientModel):
+    _name = 'dao.contract.wizard'
+    _description = 'DAO Contract Deployment Wizard'
+
+    name = fields.Char(required=True)
+    symbol = fields.Char(required=True)
+    initial_supply = fields.Integer(required=True)
+    
+    def action_deploy(self):
+        """Deploy new DAO contract"""
+        web3 = self.env['dao.config'].get_web3_connection()
+        # Contract deployment logic here
+        return {'type': 'ir.actions.act_window_close'}
+=== ./__manifest__.py ===
+{
+    'name': 'DAO Core',
+    'version': '1.0',
+    'category': 'Blockchain',
+    'summary': 'Core functionality for DAO operations',
+    'author': 'Your Company',
+    'website': 'https://yourcompany.com',
+    'depends': ['base', 'web', 'mail'],
+    'data': [
+        'security/dao_security.xml',
+        'security/ir.model.access.csv',
+        'data/dao_sequence.xml',
+        'views/dao_config_views.xml',
+        'views/dao_member_views.xml',
+        'views/res_config_settings_views.xml',  # Make sure this is after models are loaded
+        'data/scheduled_tasks.xml',
+    ],
+    'external_dependencies': {
+        'python': ['web3', 'eth_account', 'eth_keys'],
+    },
+    'installable': True,
+    'application': True,
+    'auto_install': False,
+}
+=== ./allfiles.txt ===
+=== ./security/dao_security.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="0">
+        <!-- Security Groups -->
+        <record id="module_dao_core_category" model="ir.module.category">
+            <field name="name">DAO Management</field>
+            <field name="description">Manage DAO operations</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <record id="group_dao_user" model="res.groups">
+            <field name="name">User</field>
+            <field name="category_id" ref="module_dao_core_category"/>
+            <field name="comment">Basic DAO user with limited access</field>
+        </record>
+
+        <record id="group_dao_admin" model="res.groups">
+            <field name="name">Administrator</field>
+            <field name="category_id" ref="module_dao_core_category"/>
+            <field name="implied_ids" eval="[(4, ref('group_dao_user'))]"/>
+            <field name="comment">Full access to DAO operations</field>
+            <field name="users" eval="[(4, ref('base.user_admin'))]"/>
+        </record>
+
+        <record id="group_dao_auditor" model="res.groups">
+            <field name="name">Auditor</field>
+            <field name="category_id" ref="module_dao_core_category"/>
+            <field name="comment">Read-only access for auditing</field>
+        </record>
+    </data>
+
+    <!-- Record Rules -->
+    <data noupdate="1">
+        <record id="dao_config_rule_user" model="ir.rule">
+            <field name="name">DAO Config: User can only see active configurations</field>
+            <field name="model_id" ref="model_dao_config"/>
+            <field name="domain_force">[('active', '=', True)]</field>
+            <field name="groups" eval="[(4, ref('group_dao_user'))]"/>
+        </record>
+
+        <record id="dao_transaction_rule_user" model="ir.rule">
+            <field name="name">DAO Transaction: User can only see their own transactions</field>
+            <field name="model_id" ref="model_dao_transaction"/>
+            <field name="domain_force">[('from_address', '=', user.eth_address)]</field>
+            <field name="groups" eval="[(4, ref('group_dao_user'))]"/>
+        </record>
+
+        <record id="dao_transaction_rule_admin" model="ir.rule">
+            <field name="name">DAO Transaction: Admin can see all transactions</field>
+            <field name="model_id" ref="model_dao_transaction"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+            <field name="groups" eval="[(4, ref('group_dao_admin'))]"/>
+        </record>
+        
+        <record id="rule_user_private_key_access" model="ir.rule">
+            <field name="name">Users can only access their own private key</field>
+            <field name="model_id" ref="base.model_res_users"/>
+            <field name="domain_force">[('id', '=', user.id)]</field>
+            <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="False"/>
+            <field name="perm_unlink" eval="False"/>
+        </record>
+    </data>
+</odoo>
+=== ./security/ir.model.access.csv ===
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_dao_config_user,dao.config.user,dao_core.model_dao_config,dao_core.group_dao_user,1,0,0,0
+access_dao_config_admin,dao.config.admin,dao_core.model_dao_config,dao_core.group_dao_admin,1,1,1,1
+access_dao_config_auditor,dao.config.auditor,dao_core.model_dao_config,dao_core.group_dao_auditor,1,0,0,0
+
+access_dao_transaction_user,dao.transaction.user,dao_core.model_dao_transaction,dao_core.group_dao_user,1,1,1,0
+access_dao_transaction_admin,dao.transaction.admin,dao_core.model_dao_transaction,dao_core.group_dao_admin,1,1,1,1
+access_dao_transaction_auditor,dao.transaction.auditor,dao_core.model_dao_transaction,dao_core.group_dao_auditor,1,0,0,0
+
+access_dao_contract_wizard_admin,dao.contract.wizard.admin,dao_core.model_dao_contract_wizard,dao_core.group_dao_admin,1,1,1,1
+access_dao_settings_admin,dao.settings.admin,model_res_config_settings,dao_core.group_dao_admin,1,1,1,1
+access_dao_contract_wizard_user,dao.contract.wizard.user,dao_core.model_dao_contract_wizard,dao_core.group_dao_user,1,0,0,0
+access_dao_member_private_key_user,dao.member.private.key.user,model_res_users,base.group_user,1,1,0,0
+=== ./data/scheduled_tasks.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Cron Job for Transaction Status Updates -->
+        <record id="ir_cron_update_transaction_status" model="ir.cron">
+            <field name="name">Update DAO Transaction Status</field>
+            <field name="model_id" ref="model_dao_transaction"/>
+            <field name="state">code</field>
+            <field name="code">model.update_pending_transactions()</field>
+            <field name="interval_number">5</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Cron Job for Gas Price Updates -->
+        <record id="ir_cron_update_gas_prices" model="ir.cron">
+            <field name="name">Update Gas Prices</field>
+            <field name="model_id" ref="model_dao_config"/>
+            <field name="state">code</field>
+            <field name="code">model.update_gas_prices()</field>
+            <field name="interval_number">10</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Cron Job for Blockchain Synchronization -->
+        <record id="ir_cron_sync_blockchain" model="ir.cron">
+            <field name="name">Synchronize Blockchain Data</field>
+            <field name="model_id" ref="model_dao_config"/>
+            <field name="state">code</field>
+            <field name="code">model.sync_blockchain_data()</field>
+            <field name="interval_number">15</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>
+=== ./data/dao_sequence.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Sequence for DAO Configurations -->
+        <record id="seq_dao_config" model="ir.sequence">
+            <field name="name">DAO Configuration Sequence</field>
+            <field name="code">dao.config</field>
+            <field name="prefix">DAO/</field>
+            <field name="padding">5</field>
+            <field name="company_id" eval="False"/>
+        </record>
+
+        <!-- Sequence for DAO Transactions -->
+        <record id="seq_dao_transaction" model="ir.sequence">
+            <field name="name">DAO Transaction Sequence</field>
+            <field name="code">dao.transaction</field>
+            <field name="prefix">TX/%(year)s/</field>
+            <field name="padding">6</field>
+            <field name="company_id" eval="False"/>
+        </record>
+
+        <!-- Default Configuration Data -->
+        <record id="default_dao_config" model="dao.config">
+            <field name="name">Default Ethereum Configuration</field>
+            <field name="network_id">1</field>
+            <field name="rpc_url">https://eth-mainnet.alchemyapi.io/v2/your-api-key</field>
+            <field name="contract_address">0x0000000000000000000000000000000000000000</field>
+            <field name="contract_abi">[{"type": "constructor", "inputs": []}]</field>
+            <field name="gas_limit">8000000</field>
+            <field name="gas_price_strategy">legacy</field>  <!-- Add this line -->
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>
+=== ./views/dao_config_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Tree View -->
+    <record id="view_dao_config_tree" model="ir.ui.view">
+        <field name="name">dao.config.tree</field>
+        <field name="model">dao.config</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="network_id"/>
+                <field name="contract_address"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Form View -->
+    <record id="view_dao_config_form" model="ir.ui.view">
+        <field name="name">dao.config.form</field>
+        <field name="model">dao.config</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="toggle_active" type="object"
+                                class="oe_stat_button" icon="fa-archive">
+                            <field name="active" widget="boolean_button"
+                                options="{&quot;terminology&quot;: &quot;archive&quot;}"/>
+                        </button>
+                        <button name="test_connection" 
+                                type="object"
+                                class="oe_stat_button" 
+                                icon="fa-plug"
+                                string="Test Connection"/>
+                    </div>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="e.g. Sepolia Testnet"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="network_id"/>
+                            <field name="rpc_url" placeholder="Enter RPC URL for selected network"/>
+                            <field name="contract_address"/>
+                        </group>
+                        <group>
+                            <field name="gas_price_strategy"/>
+                            <field name="gas_limit"/>
+                        </group>
+                    </group>
+                    <div class="alert alert-info" role="alert" attrs="{'invisible': [('network_id', '=', False)]}">
+                        <p><strong>Network Information:</strong></p>
+                        <p>Currency: <field name="network_currency" class="oe_inline"/></p>
+                        <p>Explorer: <field name="explorer_url" class="oe_inline" widget="url"/></p>
+                    </div>
+                    <notebook>
+                        <page string="Contract ABI" name="contract_abi">
+                            <field name="contract_abi" widget="text" options="{'rows': 20}"/>
+                            <div class="alert alert-info" role="alert">
+                                <p><strong>Note:</strong> Paste your contract ABI here in JSON format.</p>
+                                <p>Example format: [{"type": "constructor", "inputs": []}, ...]</p>
+                            </div>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- Search View -->
+    <record id="view_dao_config_search" model="ir.ui.view">
+        <field name="name">dao.config.search</field>
+        <field name="model">dao.config</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="contract_address"/>
+                <filter string="Active" name="active" domain="[('active', '=', True)]"/>
+                <filter string="Archived" name="inactive" domain="[('active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Network" name="group_by_network" context="{'group_by': 'network_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- Action Window -->
+    <record id="action_dao_config" model="ir.actions.act_window">
+        <field name="name">DAO Configurations</field>
+        <field name="res_model">dao.config</field>
+        <field name="view_mode">tree,form</field>
+        <field name="search_view_id" ref="view_dao_config_search"/>
+        <field name="context">{'search_default_active': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first DAO configuration!
+            </p>
+            <p>
+                Add a new configuration to connect with your DAO smart contract.
+            </p>
+        </field>
+    </record>
+
+    <!-- Menu Items -->
+    <menuitem id="menu_dao_root"
+              name="DAO"
+              sequence="50"/>
+
+    <menuitem id="menu_dao_config_root"
+              name="Configuration"
+              parent="menu_dao_root"
+              sequence="100"/>
+
+    <menuitem id="menu_dao_config"
+              name="DAO Configurations"
+              parent="menu_dao_config_root"
+              action="action_dao_config"
+              sequence="10"/>
+
+    <!-- Transaction Views -->
+    <record id="view_dao_transaction_tree" model="ir.ui.view">
+        <field name="name">dao.transaction.tree</field>
+        <field name="model">dao.transaction</field>
+        <field name="arch" type="xml">
+            <tree decoration-info="status=='pending'" decoration-success="status=='completed'" decoration-danger="status=='failed'">
+                <field name="name"/>
+                <field name="transaction_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="status"/>
+                <field name="timestamp"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Transaction Form View -->
+    <record id="view_dao_transaction_form" model="ir.ui.view">
+        <field name="name">dao.transaction.form</field>
+        <field name="model">dao.transaction</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="submit_transaction_with_key" 
+                            string="Submit" 
+                            type="object" 
+                            class="oe_highlight" 
+                            attrs="{'invisible': [('status', '!=', 'draft')]}"/>
+                    <button name="retry_failed_transaction" 
+                            string="Retry" 
+                            type="object" 
+                            attrs="{'invisible': [('status', '!=', 'failed')]}"/>
+                    <button name="action_cancel" 
+                            string="Cancel" 
+                            type="object" 
+                            attrs="{'invisible': [('status', 'not in', ['draft', 'failed'])]}"/>
+                    <field name="status" widget="statusbar" 
+                        statusbar_visible="draft,pending,completed,failed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="Transaction Description"
+                                attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="user_id" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="from_address" readonly="1"/>
+                            <field name="to_address" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="value" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="eth_balance"/>
+                            <field name="is_contract_interaction" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                        </group>
+                        <group>
+                            <field name="gas_limit" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="gas_price" attrs="{'readonly': [('status', '!=', 'draft')]}"/>
+                            <field name="estimated_fee"/>
+                            <field name="total_amount"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Sign Transaction" name="sign_transaction">
+                            <group>
+                                <field name="transaction_type" widget="radio" string="Signing Method"/>
+                                <field name="private_key" password="True" 
+                                    attrs="{'invisible': [('transaction_type', '!=', 'private_key')],
+                                        'required': [('transaction_type', '=', 'private_key')]}"
+                                    placeholder="Enter your private key"/>
+                                <field name="wallet_file" 
+                                    attrs="{'invisible': [('transaction_type', '!=', 'wallet_file')],
+                                        'required': [('transaction_type', '=', 'wallet_file')]}"/>
+                                <field name="wallet_password" password="True"
+                                    attrs="{'invisible': [('transaction_type', '!=', 'wallet_file')],
+                                        'required': [('transaction_type', '=', 'wallet_file')]}"
+                                    placeholder="Enter wallet password"/>
+                            </group>
+                            <div class="alert alert-info" role="alert">
+                                <p><strong>Note:</strong> Private keys and wallet files are only used to sign the transaction and are not stored.</p>
+                            </div>
+                        </page>
+                        <page string="Contract Interaction" attrs="{'invisible': [('is_contract_interaction', '=', False)]}">
+                            <group>
+                                <field name="contract_method" 
+                                    attrs="{'required': [('is_contract_interaction', '=', True)]}"/>
+                                <field name="raw_input"/>
+                            </group>
+                        </page>
+                        <page string="Transaction Details">
+                            <group>
+                                <field name="transaction_hash" readonly="1"/>
+                                <field name="gas_used" readonly="1"/>
+                                <field name="nonce" readonly="1"/>
+                                <field name="error_message" readonly="1" 
+                                    attrs="{'invisible': [('error_message', '=', False)]}"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- Transaction Tree View -->
+    <record id="view_dao_transaction_tree" model="ir.ui.view">
+        <field name="name">dao.transaction.tree</field>
+        <field name="model">dao.transaction</field>
+        <field name="arch" type="xml">
+            <tree decoration-info="status=='draft'" 
+                decoration-warning="status=='pending'" 
+                decoration-success="status=='completed'" 
+                decoration-danger="status=='failed'">
+                <field name="name"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="total_amount"/>
+                <field name="status"/>
+                <field name="transaction_hash"/>
+                <field name="timestamp"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Transaction Action Window -->
+    <record id="action_dao_transaction" model="ir.actions.act_window">
+        <field name="name">Transactions</field>
+        <field name="res_model">dao.transaction</field>
+        <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No transactions yet!
+            </p>
+            <p>
+                Transactions will appear here when you interact with the DAO.
+            </p>
+        </field>
+    </record>
+
+    <!-- Transaction Menu -->
+    <menuitem id="menu_dao_transaction"
+              name="Transactions"
+              parent="menu_dao_root"
+              action="action_dao_transaction"
+              sequence="20"/>
+</odoo>
+=== ./views/res_config_settings_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_dao" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.dao</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[hasclass('settings')]" position="inside">
+                <div class="app_settings_block" data-string="DAO" string="DAO" data-key="dao_core">
+                    <h2>Blockchain Settings</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Default Gas Limit</span>
+                                <div class="text-muted">
+                                    Default gas limit for new transactions
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="default_gas_limit" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Transaction Confirmations</span>
+                                <div class="text-muted">
+                                    Number of blocks to wait for transaction confirmation
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="transaction_confirmation_blocks" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h2>Update Intervals</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Gas Price Update Interval</span>
+                                <div class="text-muted">
+                                    How often to update gas prices (in minutes)
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="gas_price_update_interval" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Blockchain Sync Interval</span>
+                                <div class="text-muted">
+                                    How often to sync blockchain data (in minutes)
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="blockchain_sync_interval" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>
+=== ./views/dao_member_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Update User Preferences View -->
+    <record id="view_users_form_preferences_dao" model="ir.ui.view">
+        <field name="name">res.users.preferences.form.dao</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form_simple_modif"/>
+        <field name="arch" type="xml">
+            <group name="preferences" position="after">
+                <group string="WALLET CONFIGURATION" name="wallet_configuration">
+                    <field name="eth_address" readonly="1"/>
+                    <field name="eth_private_key" password="True"
+                        placeholder="Enter private key (without 0x prefix)"
+                        widget="password"
+                        options="{'password_field': true}"/>
+                    <field name="member_type" readonly="1"/>
+                    <field name="is_wallet_connected" readonly="1"/>
+                </group>
+                <div class="alert alert-info" role="alert">
+                    <p><strong>Security Note:</strong> Private key is encrypted before storage and only accessible by you.</p>
+                </div>
+            </group>
+        </field>
+    </record>
+
+    <!-- Keep the full form view for admin access -->
+    <record id="view_users_form_dao_complete" model="ir.ui.view">
+        <field name="name">res.users.form.dao.complete</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='login']" position="after">
+                <div attrs="{'invisible': [('id', '=', False)]}" class="mt-3">
+                    <group string="Wallet Configuration">
+                        <field name="eth_address" readonly="1"/>
+                        <field name="eth_private_key" password="True" 
+                                groups="dao_core.group_dao_admin"
+                                placeholder="Enter your Ethereum private key (without 0x prefix)"/>
+                        <field name="member_type"/>
+                        <field name="is_wallet_connected" readonly="1"/>
+                    </group>
+                    <div class="alert alert-info mt-3" role="alert">
+                        <p><strong>Note:</strong> Enter your private key without the '0x' prefix. The private key will be encrypted before storage.</p>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>
+=== ./controllers/__init__.py ===
+from . import main
+=== ./controllers/main.py ===
+from odoo import http
+from odoo.http import request
+from odoo.exceptions import AccessError
+import json
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class DAOController(http.Controller):
+    @http.route('/dao/wallet/create', type='json', auth='user')
+    def create_wallet(self):
+        """API endpoint to create new wallet"""
+        return request.env['res.users'].create_wallet()
+
+    @http.route('/dao/transaction/status/<string:tx_hash>', type='json', auth='user')
+    def get_transaction_status(self, tx_hash):
+        """API endpoint to check transaction status"""
+        transaction = request.env['dao.transaction'].search([
+            ('transaction_hash', '=', tx_hash)
+        ], limit=1)
+        return {'status': transaction.status if transaction else 'not_found'}

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_wallet" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.wallet</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[hasclass('settings')]" position="inside">
+                <div class="app_settings_block" data-string="Wallet Connect" string="Wallet Connect" data-key="web3_wallet_connect">
+                    <h2>Wallet Settings</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Default Gas Limit</span>
+                                <div class="text-muted">
+                                    Set default gas limit for transactions
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="default_gas_limit" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Default Gas Price Strategy</span>
+                                <div class="text-muted">
+                                    Choose default gas price calculation method
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="default_gas_price_strategy" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h2>Update Intervals</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Balance Update Interval</span>
+                                <div class="text-muted">
+                                    How often to update wallet balances (minutes)
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="balance_update_interval" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Network Check Interval</span>
+                                <div class="text-muted">
+                                    How often to check network status (minutes)
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="network_check_interval" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h2>Security Settings</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Auto Disconnect Timeout</span>
+                                <div class="text-muted">
+                                    Automatically disconnect inactive wallets after (minutes)
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="auto_disconnect_timeout" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>

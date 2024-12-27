@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_wallet_config_tree" model="ir.ui.view">
+        <field name="name">wallet.config.tree</field>
+        <field name="model">wallet.config</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="network_id"/>
+                <field name="network_currency"/>
+                <field name="active"/>
+                <field name="gas_price_strategy"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_wallet_config_form" model="ir.ui.view">
+        <field name="name">wallet.config.form</field>
+        <field name="model">wallet.config</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="test_connection" type="object" 
+                            string="Test Connection" class="btn-primary"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="toggle_active" type="object" 
+                                class="oe_stat_button" icon="fa-archive">
+                            <field name="active" widget="boolean_button"
+                                   options='{"terminology": "archive"}'/>
+                        </button>
+                    </div>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="e.g., Ethereum Mainnet"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="network_id"/>
+                            <field name="rpc_url" placeholder="Enter RPC URL"/>
+                            <field name="network_currency"/>
+                            <field name="explorer_url" widget="url"/>
+                        </group>
+                        <group>
+                            <field name="gas_price_strategy"/>
+                            <field name="gas_limit"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Advanced Settings" name="advanced_settings">
+                            <group>
+                                <field name="active"/>
+                            </group>
+                            <div class="alert alert-info" role="alert">
+                                <p><strong>Note:</strong> Only one configuration per network can be active at a time.</p>
+                            </div>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_wallet_config_search" model="ir.ui.view">
+        <field name="name">wallet.config.search</field>
+        <field name="model">wallet.config</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="network_id"/>
+                <filter string="Active" name="active" domain="[('active', '=', True)]"/>
+                <filter string="Archived" name="inactive" domain="[('active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Network" name="group_by_network" 
+                            context="{'group_by': 'network_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_wallet_config" model="ir.actions.act_window">
+        <field name="name">Network Configurations</field>
+        <field name="res_model">wallet.config</field>
+        <field name="view_mode">tree,form</field>
+        <field name="search_view_id" ref="view_wallet_config_search"/>
+        <field name="context">{'search_default_active': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first network configuration!
+            </p>
+            <p>
+                Define blockchain network configurations for wallet connections.
+            </p>
+        </field>
+    </record>
+
+    <!-- Menu Items -->
+    <menuitem id="menu_wallet_root" 
+              name="Wallet Connect"
+              web_icon="web3_wallet_connect,static/description/icon.png"
+              sequence="50"/>
+
+    <menuitem id="menu_wallet_config"
+              name="Network Configurations"
+              parent="menu_wallet_root"
+              action="action_wallet_config"
+              sequence="10"/>
+</odoo>

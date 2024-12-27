@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Update User Preferences View -->
+    <record id="view_users_form_preferences_dao" model="ir.ui.view">
+        <field name="name">res.users.preferences.form.dao</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form_simple_modif"/>
+        <field name="arch" type="xml">
+            <group name="preferences" position="after">
+                <group string="WALLET CONFIGURATION" name="wallet_configuration">
+                    <field name="eth_address" readonly="1"/>
+                    <field name="eth_private_key" password="True"
+                        placeholder="Enter private key (without 0x prefix)"
+                        widget="password"
+                        options="{'password_field': true}"/>
+                    <field name="member_type" readonly="1"/>
+                    <field name="is_wallet_connected" readonly="1"/>
+                </group>
+                <div class="alert alert-info" role="alert">
+                    <p><strong>Security Note:</strong> Private key is encrypted before storage and only accessible by you.</p>
+                </div>
+            </group>
+        </field>
+    </record>
+
+    <!-- Keep the full form view for admin access -->
+    <record id="view_users_form_dao_complete" model="ir.ui.view">
+        <field name="name">res.users.form.dao.complete</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='login']" position="after">
+                <div attrs="{'invisible': [('id', '=', False)]}" class="mt-3">
+                    <group string="Wallet Configuration">
+                        <field name="eth_address" readonly="1"/>
+                        <field name="eth_private_key" password="True" 
+                                groups="dao_core.group_dao_admin"
+                                placeholder="Enter your Ethereum private key (without 0x prefix)"/>
+                        <field name="member_type"/>
+                        <field name="is_wallet_connected" readonly="1"/>
+                    </group>
+                    <div class="alert alert-info mt-3" role="alert">
+                        <p><strong>Note:</strong> Enter your private key without the '0x' prefix. The private key will be encrypted before storage.</p>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>

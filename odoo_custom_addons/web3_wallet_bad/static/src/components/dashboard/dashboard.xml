@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="web3_wallet.WalletDashboard">
+        <div class="o_wallet_dashboard">
+            <div class="o_wallet_dashboard_header">
+                <h1>Wallet Dashboard</h1>
+                <div class="o_wallet_actions">
+                    <t t-if="!state.data.has_wallet">
+                        <button class="btn btn-primary" t-on-click="onCreateWallet">
+                            Create Wallet
+                        </button>
+                        <button class="btn btn-secondary" t-on-click="onImportWallet">
+                            Import Wallet
+                        </button>
+                    </t>
+                </div>
+            </div>
+            <div class="o_wallet_dashboard_content">
+                <t t-if="state.loading">
+                    <div class="text-center py-5">
+                        <i class="fa fa-spinner fa-spin fa-2x"/>
+                        <p>Loading...</p>
+                    </div>
+                </t>
+                <t t-else="">
+                    <t t-if="state.data.has_wallet">
+                        <div class="container-fluid">
+                            <div class="row">
+                                <div class="col-lg-4">
+                                    <div class="o_wallet_card">
+                                        <h3>Wallet</h3>
+                                        <div class="o_wallet_address">
+                                            Address: <span t-esc="state.data.address"/>
+                                            <button class="btn btn-link" 
+                                                    t-on-click="() => navigator.clipboard.writeText(state.data.address)">
+                                                <i class="fa fa-copy"/>
+                                            </button>
+                                        </div>
+                                        <div class="o_wallet_balance">
+                                            Balance: <span t-esc="state.data.balance"/> <t t-esc="state.data.currency"/>
+                                            <button class="btn btn-link" t-on-click="onRefreshBalance">
+                                                <i class="fa fa-refresh"/>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-lg-4">
+                                    <div class="o_wallet_card">
+                                        <h3>Transactions</h3>
+                                        <div class="o_transaction_stats">
+                                            <div>Total: <t t-esc="state.data.transaction_count"/></div>
+                                            <div>Pending: <t t-esc="state.data.pending_count"/></div>
+                                            <button class="btn btn-link" t-on-click="onViewTransactions">
+                                                View History
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-lg-4">
+                                    <div class="o_wallet_card">
+                                        <h3>Network</h3>
+                                        <div class="o_network_info">
+                                            <div>Network: <t t-esc="state.data.network_name"/></div>
+                                            <div>Gas Price: <t t-esc="state.data.gas_price"/> Gwei</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                    <t t-else="">
+                        <div class="alert alert-info text-center">
+                            <p>You don't have a wallet yet.</p>
+                            <button class="btn btn-primary" t-on-click="onCreateWallet">Create New Wallet</button>
+                            <span class="mx-2">or</span>
+                            <button class="btn btn-secondary" t-on-click="onImportWallet">Import Existing Wallet</button>
+                        </div>
+                    </t>
+                </t>
+            </div>
+        </div>
+    </t>
+</templates>

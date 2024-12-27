@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Main Menu -->
+    <menuitem id="menu_web3_wallet_root"
+              name="Web3 Wallet"
+              web_icon="web3_wallet,static/description/icon.png"
+              sequence="50"/>
+
+    <!-- Wallets Menu -->
+    <menuitem id="menu_web3_wallet_wallets"
+              name="My Wallets"
+              parent="menu_web3_wallet_root"
+              action="action_web3_wallet"
+              sequence="10"/>
+
+    <!-- Transactions Menu -->
+    <menuitem id="menu_web3_wallet_transactions"
+              name="Transactions"
+              parent="menu_web3_wallet_root"
+              action="action_web3_transaction"
+              sequence="20"/>
+
+    <!-- Networks Menu -->
+    <menuitem id="menu_web3_wallet_networks"
+              name="Networks"
+              parent="menu_web3_wallet_root"
+              action="action_web3_network"
+              sequence="30"
+              groups="web3_wallet.group_web3_wallet_manager"/>
+</odoo>

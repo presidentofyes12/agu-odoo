@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Extend User Form -->
+    <record id="view_users_form_wallet" model="ir.ui.view">
+        <field name="name">res.users.form.wallet</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form"/>
+        <field name="arch" type="xml">
+            <notebook position="inside">
+                <page string="Wallet Management" name="wallet_management">
+                    <group>
+                        <group string="Web3 Wallet">
+                            <field name="eth_address"/>
+                            <field name="current_chain_id"/>
+                            <field name="eth_private_key" password="True" 
+                                   groups="web3_wallet_connect.group_wallet_admin"/>
+                            <button name="create_web3_wallet" 
+                                    string="Create New Wallet" 
+                                    type="object" 
+                                    class="btn-primary"
+                                    attrs="{'invisible': [('eth_address', '!=', False)]}"/>
+                        </group>
+                        <group string="Nostr Wallet">
+                            <field name="nostr_public_key"/>
+                            <field name="nostr_private_key" password="True"
+                                   groups="web3_wallet_connect.group_wallet_admin"/>
+                            <button name="create_nostr_wallet" 
+                                    string="Create Nostr Keys" 
+                                    type="object" 
+                                    class="btn-primary"
+                                    attrs="{'invisible': [('nostr_public_key', '!=', False)]}"/>
+                        </group>
+                    </group>
+                    <group string="Connection Status">
+                        <field name="is_wallet_connected"/>
+                        <field name="last_connection_type"/>
+                    </group>
+                    <field name="wallet_connection_ids">
+                        <tree>
+                            <field name="connection_type"/>
+                            <field name="state"/>
+                            <field name="last_connection"/>
+                        </tree>
+                    </field>
+                    <div class="alert alert-info" role="alert" 
+                         groups="web3_wallet_connect.group_wallet_admin">
+                        <p><strong>Security Notice:</strong> Private keys are encrypted before storage and can only be accessed by administrators.</p>
+                    </div>
+                </page>
+            </notebook>
+        </field>
+    </record>
+
+    <!-- Extend User Preferences -->
+    <record id="res_users_view_form_preferences_wallet" model="ir.ui.view">
+        <field name="name">res.users.preferences.form.wallet</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form_simple_modif"/>
+        <field name="arch" type="xml">
+            <xpath expr="//group" position="after">
+                <group string="Wallet Information" name="wallet_info">
+                    <field name="eth_address" readonly="1"/>
+                    <field name="nostr_public_key" readonly="1"/>
+                    <field name="is_wallet_connected" readonly="1"/>
+                    <field name="last_connection_type" readonly="1"/>
+                    <button name="disconnect_wallet" 
+                            string="Disconnect Wallet" 
+                            type="object" 
+                            class="btn-secondary"
+                            attrs="{'invisible': [('is_wallet_connected', '=', False)]}"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>

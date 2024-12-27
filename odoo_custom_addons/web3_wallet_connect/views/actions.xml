@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Define the action first -->
+    <record id="action_wallet_config" model="ir.actions.act_window">
+        <field name="name">Network Configurations</field>
+        <field name="res_model">dao.config</field>
+        <field name="view_mode">tree,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first network configuration
+            </p>
+            <p>
+                Configure blockchain network settings here.
+            </p>
+        </field>
+    </record>
+
+    <!-- Then define the menu item -->
+    <menuitem 
+        id="menu_wallet_root"
+        name="Wallet"
+        sequence="50"/>
+
+    <menuitem 
+        id="menu_wallet_config" 
+        name="Network Configurations"
+        parent="menu_wallet_root"
+        action="action_wallet_config"
+        sequence="10"/>
+</odoo>

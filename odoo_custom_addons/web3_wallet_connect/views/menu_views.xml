@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem 
+        id="menu_wallet_root"
+        name="Wallet"
+        sequence="50"/>
+
+    <menuitem 
+        id="menu_wallet_config" 
+        name="Network Configurations"
+        parent="menu_wallet_root"
+        action="action_wallet_config"
+        sequence="10"/>
+
+    <menuitem id="menu_wallet_connection"
+              name="Connections"
+              parent="menu_wallet_root"
+              action="action_wallet_connection"
+              sequence="20"/>
+</odoo>

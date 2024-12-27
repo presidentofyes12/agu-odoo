@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_dao" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.dao</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[hasclass('settings')]" position="inside">
+                <div class="app_settings_block" data-string="DAO" string="DAO" data-key="dao_core">
+                    <h2>Blockchain Settings</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Default Gas Limit</span>
+                                <div class="text-muted">
+                                    Default gas limit for new transactions
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="default_gas_limit" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Transaction Confirmations</span>
+                                <div class="text-muted">
+                                    Number of blocks to wait for transaction confirmation
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="transaction_confirmation_blocks" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h2>Update Intervals</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Gas Price Update Interval</span>
+                                <div class="text-muted">
+                                    How often to update gas prices (in minutes)
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="gas_price_update_interval" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <span class="o_form_label">Blockchain Sync Interval</span>
+                                <div class="text-muted">
+                                    How often to sync blockchain data (in minutes)
+                                </div>
+                                <div class="content-group">
+                                    <div class="mt16">
+                                        <field name="blockchain_sync_interval" class="o_light_label"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>

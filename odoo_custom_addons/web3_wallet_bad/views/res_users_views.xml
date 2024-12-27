@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_users_form_wallet" model="ir.ui.view">
+        <field name="name">res.users.form.wallet</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form"/>
+        <field name="arch" type="xml">
+            <notebook position="inside">
+                <page string="Wallet" name="wallet">
+                    <group>
+                        <field name="wallet_state" invisible="1"/>
+                        <field name="eth_address" widget="wallet_address" readonly="1"/>
+                        <field name="active_network_id" 
+                               attrs="{'invisible': [('wallet_state', '=', 'none')]}"/>
+                        <field name="wallet_balance" readonly="1"/>
+                        <field name="transaction_count" readonly="1"/>
+                        <field name="last_activity" readonly="1"/>
+                    </group>
+                    <group attrs="{'invisible': [('wallet_state', '!=', 'none')]}">
+                        <button name="action_create_wallet" 
+                                string="Create New Wallet" 
+                                type="object"
+                                class="btn-primary"/>
+                        <button name="action_import_wallet"
+                                string="Import Existing Wallet"
+                                type="object"
+                                class="btn-secondary"/>
+                    </group>
+                    <div class="alert alert-info" role="alert" 
+                         attrs="{'invisible': [('wallet_state', '=', 'none')]}">
+                        <p><strong>Note:</strong> Your wallet private key is securely encrypted and stored.
+                           Only you can use it to sign transactions.</p>
+                    </div>
+                </page>
+            </notebook>
+        </field>
+    </record>
+
+    <!-- Simplified form for user preferences -->
+    <record id="view_users_form_preferences_wallet" model="ir.ui.view">
+        <field name="name">res.users.preferences.form.wallet</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form_simple_modif"/>
+        <field name="arch" type="xml">
+            <group name="preferences" position="after">
+                <group string="Wallet" name="wallet">
+                    <field name="wallet_state" invisible="1"/>
+                    <field name="eth_address" widget="wallet_address" readonly="1"/>
+                    <field name="active_network_id" readonly="1"/>
+                    <field name="wallet_balance" readonly="1"/>
+                    <field name="transaction_count" readonly="1"/>
+                </group>
+            </group>
+        </field>
+    </record>
+</odoo>

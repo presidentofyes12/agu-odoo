@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_wallet_transaction_tree" model="ir.ui.view">
+        <field name="name">wallet.transaction.tree</field>
+        <field name="model">wallet.transaction</field>
+        <field name="arch" type="xml">
+            <tree decoration-info="state=='draft'"
+                  decoration-warning="state=='pending'"
+                  decoration-success="state=='completed'"
+                  decoration-danger="state=='failed'">
+                <field name="name"/>
+                <field name="transaction_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="gas_price"/>
+                <field name="gas_used"/>
+                <field name="state"/>
+                <field name="create_date"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_wallet_transaction_form" model="ir.ui.view">
+        <field name="name">wallet.transaction.form</field>
+        <field name="model">wallet.transaction</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_send" 
+                            string="Send" 
+                            type="object" 
+                            class="oe_highlight"
+                            attrs="{'invisible': [('state', '!=', 'draft')]}"/>
+                    <button name="action_retry"
+                            string="Retry"
+                            type="object"
+                            class="btn-warning"
+                            attrs="{'invisible': [('state', '!=', 'failed')]}"/>
+                    <button name="action_cancel"
+                            string="Cancel"
+                            type="object"
+                            attrs="{'invisible': [('state', 'not in', ['draft', 'failed'])]}"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,pending,completed,failed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="Transaction Description"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="from_address" 
+                                   widget="wallet_address"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="to_address"
+                                   widget="wallet_address"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="value"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="transaction_hash" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="gas_limit"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="gas_price"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="gas_used" readonly="1"/>
+                            <field name="network_id" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Transaction Details" name="details">
+                            <group>
+                                <field name="nonce" readonly="1"/>
+                                <field name="block_number" readonly="1"/>
+                                <field name="block_timestamp" readonly="1"/>
+                                <field name="confirmation_blocks" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Technical Data" name="technical">
+                            <group>
+                                <field name="raw_transaction" readonly="1"/>
+                                <field name="signed_transaction" readonly="1"/>
+                                <field name="error_message" readonly="1"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_wallet_transaction_search" model="ir.ui.view">
+        <field name="name">wallet.transaction.search</field>
+        <field name="model">wallet.transaction</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="transaction_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <separator/>
+                <filter string="Draft" name="draft" domain="[('state', '=', 'draft')]"/>
+                <filter string="Pending" name="pending" domain="[('state', '=', 'pending')]"/>
+                <filter string="Completed" name="completed" domain="[('state', '=', 'completed')]"/>
+                <filter string="Failed" name="failed" domain="[('state', '=', 'failed')]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Status" name="group_by_state" 
+                            context="{'group_by': 'state'}"/>
+                    <filter string="Date" name="group_by_date" 
+                            context="{'group_by': 'create_date:day'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_wallet_transaction" model="ir.actions.act_window">
+        <field name="name">Transactions</field>
+        <field name="res_model">wallet.transaction</field>
+        <field name="view_mode">tree,form</field>
+        <field name="context">{'search_default_draft': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first transaction!
+            </p>
+            <p>
+                Send ETH or interact with smart contracts on the blockchain.
+            </p>
+        </field>
+    </record>
+
+    <!-- Dashboard view -->
+    <record id="action_wallet_dashboard" model="ir.actions.client">
+        <field name="name">Wallet Dashboard</field>
+        <field name="tag">wallet_dashboard</field>
+        <field name="target">main</field>
+    </record>
+</odoo>

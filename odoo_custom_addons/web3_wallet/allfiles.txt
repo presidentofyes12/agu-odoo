@@ -1,0 +1,2131 @@
+=== ./models/__init__.py ===
+from . import web3_wallet
+from . import web3_transaction
+from . import web3_network
+=== ./models/web3_wallet.py ===
+from odoo import models, fields, api, _
+from odoo.exceptions import UserError, ValidationError
+from web3 import Web3
+import json
+import logging
+from datetime import datetime
+
+_logger = logging.getLogger(__name__)
+
+class Web3Wallet(models.Model):
+    _name = 'web3.wallet'
+    _description = 'Web3 Wallet'
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _order = 'create_date desc'
+
+    name = fields.Char(string='Wallet Name', required=True, tracking=True)
+    address = fields.Char(string='Wallet Address', required=True, tracking=True)
+    user_id = fields.Many2one('res.users', string='Owner', required=True, 
+                             default=lambda self: self.env.user)
+    network_id = fields.Many2one('web3.network', string='Network', required=True)
+    balance = fields.Float(string='Balance', digits=(18,8), tracking=True)
+    last_sync = fields.Datetime(string='Last Sync')
+    state = fields.Selection([
+        ('connected', 'Connected'),
+        ('disconnected', 'Disconnected')
+    ], string='Status', default='disconnected', tracking=True)
+    currency_symbol = fields.Char(related='network_id.currency_symbol', string='Currency')
+    transaction_ids = fields.One2many('web3.transaction', 'wallet_id', string='Transactions')
+    transaction_count = fields.Integer(compute='_compute_transaction_count', string='Transaction Count')
+
+    _sql_constraints = [
+        ('unique_address_per_user', 'unique(user_id,address,network_id)', 
+         'This wallet address is already registered for this user on this network!')
+    ]
+
+    @api.constrains('address')
+    def _check_address(self):
+        for wallet in self:
+            if not Web3.is_address(wallet.address):
+                raise ValidationError(_('Invalid Ethereum address format'))
+
+    @api.depends('transaction_ids')
+    def _compute_transaction_count(self):
+        for wallet in self:
+            wallet.transaction_count = len(wallet.transaction_ids)
+
+    def action_connect(self):
+        """Connect the wallet"""
+        self.ensure_one()
+        self.state = 'connected'
+        self.last_sync = fields.Datetime.now()
+        self._sync_balance()
+        return True
+
+    def action_disconnect(self):
+        """Disconnect the wallet"""
+        self.ensure_one()
+        self.state = 'disconnected'
+        return True
+
+    def action_sync(self):
+        """Sync wallet balance and transactions"""
+        self.ensure_one()
+        if self.state != 'connected':
+            raise UserError(_('Wallet must be connected to sync'))
+        self._sync_balance()
+        self._sync_transactions()
+        self.last_sync = fields.Datetime.now()
+        return True
+
+    def _sync_balance(self):
+        """Update wallet balance from blockchain"""
+        self.ensure_one()
+        try:
+            web3 = self.network_id.get_web3()
+            balance_wei = web3.eth.get_balance(self.address)
+            self.balance = float(web3.from_wei(balance_wei, 'ether'))
+            _logger.info(f"Updated balance for wallet {self.address}: {self.balance} {self.currency_symbol}")
+        except Exception as e:
+            _logger.error(f"Failed to sync balance for wallet {self.address}: {str(e)}")
+            raise UserError(_("Failed to sync wallet balance: %s") % str(e))
+
+    def _sync_transactions(self):
+        """Sync recent transactions from blockchain"""
+        self.ensure_one()
+        try:
+            web3 = self.network_id.get_web3()
+            latest_block = web3.eth.block_number
+            from_block = latest_block - 1000  # Last 1000 blocks
+
+            for block_number in range(from_block, latest_block + 1):
+                block = web3.eth.get_block(block_number, full_transactions=True)
+                for tx in block.transactions:
+                    if tx['from'].lower() == self.address.lower() or \
+                       (tx['to'] and tx['to'].lower() == self.address.lower()):
+                        self._create_transaction_from_data(tx, block.timestamp)
+
+            _logger.info(f"Synced transactions for wallet {self.address}")
+        except Exception as e:
+            _logger.error(f"Failed to sync transactions for wallet {self.address}: {str(e)}")
+            raise UserError(_("Failed to sync transactions: %s") % str(e))
+
+    def _create_transaction_from_data(self, tx_data, timestamp):
+        """Create transaction record from blockchain data"""
+        tx_hash = tx_data['hash'].hex()
+        existing_tx = self.env['web3.transaction'].search([
+            ('tx_hash', '=', tx_hash),
+            ('wallet_id', '=', self.id)
+        ])
+
+        if not existing_tx:
+            self.env['web3.transaction'].create({
+                'wallet_id': self.id,
+                'tx_hash': tx_hash,
+                'from_address': tx_data['from'],
+                'to_address': tx_data['to'],
+                'value': float(Web3.from_wei(tx_data['value'], 'ether')),
+                'gas_price': float(Web3.from_wei(tx_data['gasPrice'], 'gwei')),
+                'gas_used': tx_data['gas'],
+                'timestamp': datetime.fromtimestamp(timestamp),
+                'network_id': self.network_id.id,
+                'status': 'confirmed'
+            })
+
+    @api.model
+    def cron_sync_wallets(self):
+        """Cron job to sync connected wallets"""
+        wallets = self.search([('state', '=', 'connected')])
+        for wallet in wallets:
+            try:
+                wallet.action_sync()
+            except Exception as e:
+                _logger.error(f"Failed to sync wallet {wallet.address}: {str(e)}")
+=== ./models/web3_network.py ===
+from odoo import models, fields, api, _
+from odoo.exceptions import ValidationError
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class Web3Network(models.Model):
+    _name = 'web3.network'
+    _description = 'Web3 Network'
+    _order = 'chain_id'
+
+    name = fields.Char(string='Network Name', required=True)
+    chain_id = fields.Integer(string='Chain ID', required=True)
+    currency_symbol = fields.Char(string='Currency Symbol', required=True)
+    rpc_url = fields.Char(string='RPC URL', required=True)
+    explorer_url = fields.Char(string='Explorer URL', required=True)
+    is_active = fields.Boolean(string='Active', default=True)
+    wallet_ids = fields.One2many('web3.wallet', 'network_id', string='Wallets')
+
+    _sql_constraints = [
+        ('unique_chain_id', 'unique(chain_id)', 'Chain ID must be unique!')
+    ]
+
+    @api.constrains('rpc_url')
+    def _check_rpc_url(self):
+        for record in self:
+            if not record.rpc_url.startswith(('http://', 'https://', 'ws://', 'wss://')):
+                raise ValidationError(_('RPC URL must start with http://, https://, ws:// or wss://'))
+
+    @api.constrains('explorer_url')
+    def _check_explorer_url(self):
+        for record in self:
+            if not record.explorer_url.startswith(('http://', 'https://')):
+                raise ValidationError(_('Explorer URL must start with http:// or https://'))
+
+    def test_connection(self):
+        """Test RPC connection to the network"""
+        self.ensure_one()
+        try:
+            from web3 import Web3
+            if self.rpc_url.startswith(('ws://', 'wss://')):
+                provider = Web3.WebsocketProvider(self.rpc_url)
+            else:
+                provider = Web3.HTTPProvider(self.rpc_url)
+                
+            w3 = Web3(provider)
+            is_connected = w3.is_connected()
+            if is_connected:
+                block_number = w3.eth.block_number
+                _logger.info(f"Successfully connected to {self.name}. Current block: {block_number}")
+            return is_connected
+        except Exception as e:
+            _logger.error(f"Failed to connect to {self.name}: {str(e)}")
+            return False
+
+    def get_web3(self):
+        """Get Web3 instance for this network"""
+        self.ensure_one()
+        from web3 import Web3
+        if self.rpc_url.startswith(('ws://', 'wss://')):
+            provider = Web3.WebsocketProvider(self.rpc_url)
+        else:
+            provider = Web3.HTTPProvider(self.rpc_url)
+        return Web3(provider)
+=== ./models/web3_transaction.py ===
+from odoo import models, fields, api, _
+from odoo.exceptions import ValidationError
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class Web3Transaction(models.Model):
+    _name = 'web3.transaction'
+    _description = 'Web3 Transaction'
+    _order = 'timestamp desc, id desc'
+
+    wallet_id = fields.Many2one('web3.wallet', string='Wallet', required=True, ondelete='cascade')
+    network_id = fields.Many2one('web3.network', string='Network', required=True)
+    tx_hash = fields.Char(string='Transaction Hash', required=True)
+    from_address = fields.Char(string='From Address', required=True)
+    to_address = fields.Char(string='To Address')
+    value = fields.Float(string='Value', digits=(18,8), required=True)
+    gas_price = fields.Float(string='Gas Price (Gwei)', digits=(18,2))
+    gas_used = fields.Integer(string='Gas Used')
+    timestamp = fields.Datetime(string='Timestamp')
+    status = fields.Selection([
+        ('pending', 'Pending'),
+        ('confirmed', 'Confirmed'),
+        ('failed', 'Failed')
+    ], string='Status', default='pending', required=True)
+    currency_symbol = fields.Char(related='network_id.currency_symbol', string='Currency')
+
+    _sql_constraints = [
+        ('unique_tx_hash_per_wallet', 'unique(wallet_id,tx_hash)', 
+         'Transaction hash must be unique per wallet!')
+    ]
+
+    @api.constrains('from_address', 'to_address')
+    def _check_addresses(self):
+        from web3 import Web3
+        for tx in self:
+            if not Web3.is_address(tx.from_address):
+                raise ValidationError(_('Invalid sender address format'))
+            if tx.to_address and not Web3.is_address(tx.to_address):
+                raise ValidationError(_('Invalid recipient address format'))
+
+    def action_view_on_explorer(self):
+        """Open transaction in blockchain explorer"""
+        self.ensure_one()
+        if not self.network_id.explorer_url:
+            raise ValidationError(_('No explorer URL configured for this network'))
+        
+        explorer_url = f"{self.network_id.explorer_url}/tx/{self.tx_hash}"
+        return {
+            'type': 'ir.actions.act_url',
+            'url': explorer_url,
+            'target': 'new'
+        }
+
+    def action_check_status(self):
+        """Check transaction status on blockchain"""
+        self.ensure_one()
+        try:
+            web3 = self.network_id.get_web3()
+            receipt = web3.eth.get_transaction_receipt(self.tx_hash)
+            
+            if receipt:
+                self.status = 'confirmed' if receipt['status'] == 1 else 'failed'
+                if 'gasUsed' in receipt:
+                    self.gas_used = receipt['gasUsed']
+                    
+            return True
+        except Exception as e:
+            _logger.error(f"Failed to check transaction status: {str(e)}")
+            return False
+
+    @api.model
+    def cron_update_pending_transactions(self):
+        """Cron job to update pending transaction statuses"""
+        pending_txs = self.search([('status', '=', 'pending')])
+        for tx in pending_txs:
+            try:
+                tx.action_check_status()
+            except Exception as e:
+                _logger.error(f"Failed to update transaction {tx.tx_hash}: {str(e)}")
+
+    def get_transaction_fees(self):
+        """Calculate transaction fees in native currency"""
+        self.ensure_one()
+        if self.gas_price and self.gas_used:
+            fee_in_gwei = self.gas_price * self.gas_used
+            fee_in_eth = fee_in_gwei / 1e9  # Convert from Gwei to ETH
+            return {
+                'amount': fee_in_eth,
+                'currency': self.currency_symbol
+            }
+        return False
+
+    def name_get(self):
+        return [(tx.id, f"{tx.tx_hash[:10]}... ({tx.value} {tx.currency_symbol})") 
+                for tx in self]
+=== ./__init__.py ===
+from . import models
+from . import controllers
+from . import wizards
+=== ./wizards/__init__.py ===
+from . import send_transaction_wizard
+=== ./wizards/send_transaction_wizard.py ===
+from odoo import models, fields, api, _
+from odoo.exceptions import UserError
+from web3 import Web3
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class SendTransactionWizard(models.TransientModel):
+    _name = 'send.transaction.wizard'
+    _description = 'Send Web3 Transaction'
+
+    wallet_id = fields.Many2one('web3.wallet', string='Wallet', required=True)
+    from_address = fields.Char(string='From Address', readonly=True)
+    to_address = fields.Char(string='To Address', required=True)
+    amount = fields.Float(string='Amount', required=True, digits=(18, 8))
+    network_id = fields.Many2one('web3.network', string='Network', required=True)
+    estimated_gas = fields.Float(string='Estimated Gas (Gwei)', compute='_compute_estimated_gas')
+    gas_price = fields.Float(string='Gas Price (Gwei)', compute='_compute_estimated_gas')
+    total_cost = fields.Float(string='Total Cost', compute='_compute_total_cost')
+    currency_symbol = fields.Char(related='network_id.currency_symbol')
+
+    @api.depends('to_address', 'amount', 'network_id')
+    def _compute_estimated_gas(self):
+        for record in self:
+            try:
+                if record.to_address and record.amount and record.network_id:
+                    w3 = Web3(Web3.HTTPProvider(record.network_id.rpc_url))
+                    
+                    # Use default gas for ETH transfer
+                    record.estimated_gas = 21000
+                    record.gas_price = float(w3.from_wei(w3.eth.gas_price, 'gwei'))
+                else:
+                    record.estimated_gas = 0
+                    record.gas_price = 0
+            except Exception as e:
+                _logger.error(f"Error computing gas estimate: {str(e)}")
+                record.estimated_gas = 0
+                record.gas_price = 0
+
+    @api.depends('amount', 'estimated_gas', 'gas_price')
+    def _compute_total_cost(self):
+        for record in self:
+            gas_cost = (record.estimated_gas * record.gas_price) / 1e9  # Convert from Gwei to ETH
+            record.total_cost = record.amount + gas_cost
+
+    @api.model
+    def default_get(self, fields):
+        res = super(SendTransactionWizard, self).default_get(fields)
+        if self._context.get('active_model') == 'web3.wallet':
+            wallet = self.env['web3.wallet'].browse(self._context.get('active_id'))
+            if wallet:
+                res.update({
+                    'wallet_id': wallet.id,
+                    'from_address': wallet.address,
+                    'network_id': wallet.network_id.id,
+                })
+        return res
+
+    def action_send_transaction(self):
+        self.ensure_one()
+        if not Web3.is_address(self.to_address):
+            raise UserError(_("Invalid destination address"))
+
+        if self.amount <= 0:
+            raise UserError(_("Amount must be greater than 0"))
+
+        if self.wallet_id.balance < self.total_cost:
+            raise UserError(_("Insufficient balance for transaction"))
+
+        try:
+            # Create transaction record
+            transaction = self.env['web3.transaction'].create({
+                'wallet_id': self.wallet_id.id,
+                'from_address': self.from_address,
+                'to_address': self.to_address,
+                'value': self.amount,
+                'network_id': self.network_id.id,
+                'status': 'pending',
+                'gas_price': self.gas_price,
+                'gas_used': self.estimated_gas,
+            })
+
+            # Return success message and close wizard
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('Transaction Initiated'),
+                    'message': _('Please confirm the transaction in your Web3 wallet'),
+                    'type': 'success',
+                    'sticky': False,
+                }
+            }
+        except Exception as e:
+            _logger.error(f"Error creating transaction: {str(e)}")
+            raise UserError(_("Failed to initiate transaction: %s") % str(e))
+=== ./wizards/send_transaction_wizard_view.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_send_transaction_wizard_form" model="ir.ui.view">
+        <field name="name">send.transaction.wizard.form</field>
+        <field name="model">send.transaction.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Send Transaction">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="wallet_id" invisible="1"/>
+                            <field name="network_id" readonly="1"/>
+                            <field name="from_address" readonly="1"/>
+                            <field name="to_address"/>
+                            <field name="amount"/>
+                            <field name="currency_symbol" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="estimated_gas" readonly="1"/>
+                            <field name="gas_price" readonly="1"/>
+                            <field name="total_cost" readonly="1"/>
+                        </group>
+                    </group>
+                </sheet>
+                <footer>
+                    <button name="action_send_transaction" string="Send" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>
+=== ./__manifest__.py ===
+{
+    'name': 'Web3 Wallet Manager',
+    'version': '1.0',
+    'category': 'Cryptocurrency',
+    'summary': 'Manage Web3 wallets and transactions within Odoo',
+    'description': """
+        Web3 Wallet Management System for Odoo
+        =====================================
+        * Connect to Web3 wallets (MetaMask, Rabby)
+        * Send transactions
+        * View transaction history
+        * Support for multiple networks (Ethereum, PulseChain, Polygon)
+        * Track balances and transactions
+    """,
+    'author': 'Your Company',
+    'website': 'https://www.example.com',
+    'depends': ['base', 'web', 'mail'],
+    'data': [
+        'security/web3_wallet_security.xml',
+        'security/ir.model.access.csv',
+        'views/web3_wallet_views.xml',
+        'views/menu_items.xml',
+        'data/web3_network_data.xml',
+        'wizards/send_transaction_wizard_view.xml',
+    ],
+    'assets': {
+        'web.assets_backend': [
+            'web3_wallet/static/src/js/web3_wallet.js',
+            'web3_wallet/static/src/css/web3_wallet.css',
+        ],
+    },
+    'application': True,
+    'installable': True,
+    'license': 'LGPL-3',
+    'external_dependencies': {
+        'python': ['web3', 'eth_account'],
+    },
+}
+=== ./static/src/xml/wallet_templates.xml ===
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="web3_wallet.WalletDisplay">
+        <div class="o_wallet_display">
+            <div class="form-group">
+                <label>Connected Address</label>
+                <div class="input-group">
+                    <input type="text" class="form-control o_wallet_address" readonly="1"/>
+                    <div class="input-group-append">
+                        <button class="btn btn-outline-secondary o_view_explorer" type="button">
+                            <i class="fa fa-external-link"/>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Balance</label>
+                <div class="o_wallet_balance"/>
+            </div>
+            <div class="form-group">
+                <label>Network</label>
+                <select class="form-control o_network_selector">
+                    <t t-foreach="widget.networks" t-as="network">
+                        <option t-att-value="network.chain_id">
+                            <t t-esc="network.name"/>
+                        </option>
+                    </t>
+                </select>
+            </div>
+        </div>
+    </t>
+
+    <t t-name="web3_wallet.TransactionForm">
+        <div class="o_transaction_form">
+            <div class="form-group">
+                <label>To Address</label>
+                <input type="text" class="form-control o_to_address" placeholder="0x..."/>
+            </div>
+            <div class="form-group">
+                <label>Amount</label>
+                <div class="input-group">
+                    <input type="number" step="0.000001" class="form-control o_amount"/>
+                    <div class="input-group-append">
+                        <span class="input-group-text o_currency_symbol">
+                            <t t-esc="widget.wallet.currency_symbol || 'ETH'"/>
+                        </span>
+                    </div>
+                </div>
+            </div>
+            <div class="o_transaction_details">
+                <small class="text-muted">Gas Estimate: <span class="o_gas_estimate">0</span> Gwei</small>
+                <br/>
+                <small class="text-muted">Total Cost: <span class="o_total_cost">0</span></small>
+            </div>
+            <button class="btn btn-primary o_send_tx mt-3">Send Transaction</button>
+        </div>
+    </t>
+
+    <t t-name="web3_wallet.TransactionHistory">
+        <div class="o_transaction_history">
+            <div class="table-responsive">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Address</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="o_history_tbody"/>
+                </table>
+            </div>
+        </div>
+    </t>
+
+</templates>
+=== ./static/src/css/web3_wallet.css ===
+/* Web3 Wallet Container */
+.o_web3_wallet_container {
+    padding: 1rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.o_wallet_card {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+    background: white;
+}
+
+.o_wallet_info {
+    padding: 1rem 0;
+}
+
+/* Address Display */
+.o_wallet_address {
+    font-family: monospace;
+    background-color: #f8f9fa;
+}
+
+.o_view_explorer {
+    padding: 0.375rem 0.75rem;
+}
+
+/* Balance Display */
+.o_wallet_balance {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #1a73e8;
+    padding: 0.5rem 0;
+}
+
+/* Network Selector */
+.o_network_selector {
+    border-radius: 4px;
+    border: 1px solid #ced4da;
+}
+
+/* Transaction History */
+.o_transaction_history {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.o_history_tbody tr {
+    transition: background-color 0.2s;
+}
+
+.o_history_tbody tr:hover {
+    background-color: #f8f9fa;
+}
+
+/* Transaction Status Badges */
+.o_tx_status {
+    padding: 0.25rem 0.5rem;
+    border-radius: 12px;
+    font-size: 0.875rem;
+}
+
+.o_tx_status.confirmed {
+    background-color: #e6f4ea;
+    color: #1e8e3e;
+}
+
+.o_tx_status.pending {
+    background-color: #fef7e0;
+    color: #b06000;
+}
+
+.o_tx_status.failed {
+    background-color: #fce8e6;
+    color: #c5221f;
+}
+
+/* Transaction Details */
+.o_transaction_details {
+    background-color: #f8f9fa;
+    padding: 0.75rem;
+    border-radius: 4px;
+    margin-top: 1rem;
+}
+
+/* Loading State */
+.o_loading {
+    position: relative;
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+.o_loading::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #1a73e8;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    transform: translate(-50%, -50%);
+}
+
+@keyframes spin {
+    0% { transform: translate(-50%, -50%) rotate(0deg); }
+    100% { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+/* Connect/Disconnect Button States */
+.o_connect_wallet,
+.o_disconnect_wallet {
+    width: 100%;
+    margin-top: 1rem;
+}
+
+/* Gas Estimation Display */
+.o_gas_estimate,
+.o_total_cost {
+    font-family: monospace;
+    color: #5f6368;
+}
+
+/* Toast Notifications */
+.o_notification {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 1050;
+    max-width: 350px;
+}
+
+.o_notification .toast {
+    background: white;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+=== ./static/src/js/components/WalletDisplay.js ===
+odoo.define('web3_wallet.wallet_display', function (require) {
+    'use strict';
+
+    var Widget = require('web.Widget');
+    var core = require('web.core');
+    var _t = core._t;
+
+    var WalletDisplay = Widget.extend({
+        template: 'web3_wallet.WalletDisplay',
+        events: {
+            'click .o_view_explorer': '_onViewExplorer',
+            'change .o_network_selector': '_onNetworkChange'
+        },
+
+        init: function(parent, options) {
+            this._super.apply(this, arguments);
+            this.wallet = options.wallet || {};
+            this.networks = options.networks || [];
+        },
+
+        willStart: function() {
+            return Promise.all([
+                this._super.apply(this, arguments),
+                this._loadNetworkData()
+            ]);
+        },
+
+        _loadNetworkData: function() {
+            return this._rpc({
+                route: '/web3_wallet/get_networks',
+                params: {}
+            }).then(result => {
+                this.networks = result.networks || [];
+            });
+        },
+
+        _onViewExplorer: function() {
+            if (this.wallet.address && this.wallet.network_id) {
+                const network = this.networks.find(n => n.id === this.wallet.network_id);
+                if (network && network.explorer_url) {
+                    window.open(`${network.explorer_url}/address/${this.wallet.address}`, '_blank');
+                }
+            }
+        },
+
+        _onNetworkChange: function(ev) {
+            const chainId = parseInt($(ev.currentTarget).val());
+            this.trigger_up('network_changed', { chainId: chainId });
+        },
+
+        updateDisplay: function(walletData) {
+            this.wallet = walletData;
+            this._updateUI();
+        },
+
+        _updateUI: function() {
+            this.$('.o_wallet_address').val(this.wallet.address || '');
+            this.$('.o_wallet_balance').text(
+                this.wallet.balance ? 
+                `${this.wallet.balance} ${this.wallet.currency_symbol || 'ETH'}` : 
+                '0 ETH'
+            );
+            this.$('.o_network_selector').val(this.wallet.network_id);
+        }
+    });
+
+    return WalletDisplay;
+});
+=== ./static/src/js/components/WalletManager.js ===
+odoo.define('web3_wallet.wallet_manager_component', function (require) {
+    'use strict';
+
+    var Widget = require('web.Widget');
+    var core = require('web.core');
+    var WalletDisplay = require('web3_wallet.wallet_display');
+    var TransactionForm = require('web3_wallet.transaction_form');
+    var TransactionHistory = require('web3_wallet.transaction_history');
+    var _t = core._t;
+
+    var WalletManagerComponent = Widget.extend({
+        template: 'web3_wallet.WalletManager',
+        custom_events: {
+            'network_changed': '_onNetworkChanged',
+            'send_transaction': '_onSendTransaction'
+        },
+
+        init: function (parent, options) {
+            this._super.apply(this, arguments);
+            this.wallet = null;
+            this.web3 = null;
+            this.currentAccount = null;
+            this.currentNetwork = null;
+            this.childWidgets = {
+                walletDisplay: null,
+                transactionForm: null,
+                transactionHistory: null
+            };
+        },
+
+        willStart: function () {
+            return Promise.all([
+                this._super.apply(this, arguments),
+                this._initializeWeb3()
+            ]);
+        },
+
+        start: async function () {
+            await this._super.apply(this, arguments);
+            this._initializeComponents();
+            this._setupEventListeners();
+            return this;
+        },
+
+        _initializeWeb3: async function () {
+            if (typeof window.ethereum !== 'undefined') {
+                this.web3 = new Web3(window.ethereum);
+                // Check if already connected
+                try {
+                    const accounts = await window.ethereum.request({
+                        method: 'eth_accounts'
+                    });
+                    if (accounts.length > 0) {
+                        await this._handleAccountConnect(accounts[0]);
+                    }
+                } catch (error) {
+                    console.error('Error checking accounts:', error);
+                }
+            } else {
+                this.displayNotification({
+                    type: 'warning',
+                    title: _t('Web3 Not Found'),
+                    message: _t('Please install MetaMask or another Web3 wallet.')
+                });
+            }
+        },
+
+        _initializeComponents: function () {
+            // Initialize Wallet Display
+            this.childWidgets.walletDisplay = new WalletDisplay(this, {
+                wallet: this.wallet
+            });
+            this.childWidgets.walletDisplay.appendTo(this.$('.o_wallet_display_container'));
+
+            // Initialize Transaction Form
+            this.childWidgets.transactionForm = new TransactionForm(this, {
+                wallet: this.wallet,
+                web3: this.web3
+            });
+            this.childWidgets.transactionForm.appendTo(this.$('.o_transaction_form_container'));
+
+            // Initialize Transaction History
+            this.childWidgets.transactionHistory = new TransactionHistory(this, {
+                wallet: this.wallet,
+                currentNetwork: this.currentNetwork
+            });
+            this.childWidgets.transactionHistory.appendTo(this.$('.o_transaction_history_container'));
+
+            // Set initial visibility
+            this._updateComponentVisibility();
+        },
+
+        _setupEventListeners: function () {
+            if (window.ethereum) {
+                window.ethereum.on('accountsChanged', accounts => {
+                    if (accounts.length === 0) {
+                        this._handleDisconnect();
+                    } else {
+                        this._handleAccountConnect(accounts[0]);
+                    }
+                });
+
+                window.ethereum.on('chainChanged', chainId => {
+                    this._handleNetworkChange(chainId);
+                });
+
+                window.ethereum.on('connect', connectInfo => {
+                    this._handleConnect(connectInfo);
+                });
+
+                window.ethereum.on('disconnect', error => {
+                    this._handleDisconnect();
+                });
+            }
+        },
+
+        _handleAccountConnect: async function (account) {
+            try {
+                const chainId = await window.ethereum.request({
+                    method: 'eth_chainId'
+                });
+
+                const result = await this._rpc({
+                    route: '/web3_wallet/connect',
+                    params: {
+                        address: account,
+                        chain_id: parseInt(chainId, 16)
+                    }
+                });
+
+                if (result.success) {
+                    this.wallet = result.wallet;
+                    this.currentAccount = account;
+                    this.currentNetwork = result.network;
+                    this._updateComponents();
+                } else {
+                    throw new Error(result.error);
+                }
+            } catch (error) {
+                this.displayNotification({
+                    type: 'danger',
+                    title: _t('Connection Error'),
+                    message: error.message
+                });
+            }
+        },
+
+        _handleDisconnect: async function () {
+            if (this.wallet?.id) {
+                await this._rpc({
+                    route: '/web3_wallet/disconnect',
+                    params: {
+                        wallet_id: this.wallet.id
+                    }
+                });
+            }
+
+            this.wallet = null;
+            this.currentAccount = null;
+            this.currentNetwork = null;
+            this._updateComponents();
+        },
+
+        _handleNetworkChange: async function (chainId) {
+            const networkId = parseInt(chainId, 16);
+            try {
+                const result = await this._rpc({
+                    route: '/web3_wallet/get_networks',
+                    params: { chain_id: networkId }
+                });
+
+                if (result.success) {
+                    this.currentNetwork = result.network;
+                    await this._updateComponents();
+                }
+            } catch (error) {
+                console.error('Error handling network change:', error);
+            }
+        },
+
+        _handleConnect: function (connectInfo) {
+            this.displayNotification({
+                type: 'success',
+                title: _t('Connected'),
+                message: _t('Successfully connected to Web3 wallet.')
+            });
+        },
+
+        _updateComponents: function () {
+            if (this.wallet) {
+                // Update wallet display
+                this.childWidgets.walletDisplay.updateDisplay({
+                    ...this.wallet,
+                    currentNetwork: this.currentNetwork
+                });
+
+                // Reset and update transaction form
+                this.childWidgets.transactionForm.clear();
+
+                // Refresh transaction history
+                this.childWidgets.transactionHistory.refresh();
+            }
+
+            this._updateComponentVisibility();
+        },
+
+        _updateComponentVisibility: function () {
+            const isConnected = Boolean(this.wallet);
+            this.$('.o_transaction_form_container').toggleClass('d-none', !isConnected);
+            this.$('.o_transaction_history_container').toggleClass('d-none', !isConnected);
+            this.$('.o_connect_wallet').toggleClass('d-none', isConnected);
+            this.$('.o_disconnect_wallet').toggleClass('d-none', !isConnected);
+        },
+
+        _onNetworkChanged: async function (ev) {
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: `0x${ev.data.chainId.toString(16)}` }],
+                });
+            } catch (error) {
+                this.displayNotification({
+                    type: 'danger',
+                    title: _t('Network Switch Failed'),
+                    message: error.message
+                });
+            }
+        },
+
+        _onSendTransaction: async function (ev) {
+            const { to_address, amount } = ev.data;
+            try {
+                const tx = {
+                    from: this.currentAccount,
+                    to: to_address,
+                    value: this.web3.utils.toWei(amount.toString(), 'ether')
+                };
+
+                const gasEstimate = await this.web3.eth.estimateGas(tx);
+                tx.gas = gasEstimate;
+
+                const txHash = await window.ethereum.request({
+                    method: 'eth_sendTransaction',
+                    params: [tx],
+                });
+
+                this.displayNotification({
+                    type: 'success',
+                    title: _t('Transaction Sent'),
+                    message: _t('Transaction hash: ') + txHash
+                });
+
+                // Clear the form and refresh history
+                this.childWidgets.transactionForm.clear();
+                await this.childWidgets.transactionHistory.refresh();
+
+            } catch (error) {
+                this.displayNotification({
+                    type: 'danger',
+                    title: _t('Transaction Failed'),
+                    message: error.message
+                });
+            }
+        },
+
+        destroy: function () {
+            // Clean up event listeners
+            if (window.ethereum) {
+                window.ethereum.removeAllListeners();
+            }
+            // Destroy child widgets
+            Object.values(this.childWidgets).forEach(widget => {
+                if (widget && widget.destroy) {
+                    widget.destroy();
+                }
+            });
+            this._super.apply(this, arguments);
+        }
+    });
+
+    return WalletManagerComponent;
+});
+=== ./static/src/js/components/TransactionHistory.js ===
+odoo.define('web3_wallet.transaction_history', function (require) {
+    'use strict';
+
+    var Widget = require('web.Widget');
+    var core = require('web.core');
+    var _t = core._t;
+
+    var TransactionHistory = Widget.extend({
+        template: 'web3_wallet.TransactionHistory',
+        events: {
+            'click .o_view_transaction': '_onViewTransaction'
+        },
+
+        init: function(parent, options) {
+            this._super.apply(this, arguments);
+            this.wallet = options.wallet;
+            this.transactions = [];
+            this.currentNetwork = options.currentNetwork;
+        },
+
+        willStart: function() {
+            return Promise.all([
+                this._super.apply(this, arguments),
+                this._loadTransactions()
+            ]);
+        },
+
+        _loadTransactions: function() {
+            if (!this.wallet?.id) return Promise.resolve();
+
+            return this._rpc({
+                route: '/web3_wallet/get_transactions',
+                params: {
+                    wallet_id: this.wallet.id,
+                    limit: 20
+                }
+            }).then(result => {
+                if (result.success) {
+                    this.transactions = result.transactions;
+                    this._render();
+                }
+            });
+        },
+
+        _render: function() {
+            this.$('.o_history_tbody').empty();
+            
+            this.transactions.forEach(tx => {
+                const isSent = tx.from_address.toLowerCase() === this.wallet.address.toLowerCase();
+                const $row = $('<tr>').append(
+                    $('<td>').text(isSent ? _t('Sent') : _t('Received')),
+                    $('<td>').text(`${tx.value} ${this.wallet.currency_symbol || 'ETH'}`),
+                    $('<td>').text(isSent ? tx.to_address : tx.from_address),
+                    $('<td>').append(
+                        $('<span>')
+                            .addClass(`o_tx_status ${tx.status}`)
+                            .text(this._formatStatus(tx.status))
+                    ),
+                    $('<td>').append(
+                        $('<button>')
+                            .addClass('btn btn-link o_view_transaction')
+                            .attr('data-hash', tx.hash)
+                            .append($('<i>').addClass('fa fa-external-link'))
+                    )
+                );
+                this.$('.o_history_tbody').append($row);
+            });
+        },
+
+        _formatStatus: function(status) {
+            return {
+                'pending': _t('Pending'),
+                'confirmed': _t('Confirmed'),
+                'failed': _t('Failed')
+            }[status] || status;
+        },
+
+        _onViewTransaction: function(ev) {
+            const txHash = $(ev.currentTarget).data('hash');
+            if (txHash && this.currentNetwork?.explorer_url) {
+                window.open(`${this.currentNetwork.explorer_url}/tx/${txHash}`, '_blank');
+            }
+        },
+
+        refresh: function() {
+            return this._loadTransactions();
+        }
+    });
+
+    return TransactionHistory;
+});
+=== ./static/src/js/components/TransactionForm.js ===
+odoo.define('web3_wallet.transaction_form', function (require) {
+    'use strict';
+
+    var Widget = require('web.Widget');
+    var core = require('web.core');
+    var _t = core._t;
+
+    var TransactionForm = Widget.extend({
+        template: 'web3_wallet.TransactionForm',
+        events: {
+            'input .o_to_address': '_onInputChange',
+            'input .o_amount': '_onInputChange',
+            'click .o_send_tx': '_onSendTransaction'
+        },
+
+        init: function(parent, options) {
+            this._super.apply(this, arguments);
+            this.wallet = options.wallet;
+            this.web3 = options.web3;
+        },
+
+        _onInputChange: function() {
+            this._updateGasEstimate();
+        },
+
+        _updateGasEstimate: async function() {
+            const toAddress = this.$('.o_to_address').val();
+            const amount = this.$('.o_amount').val();
+
+            if (this.web3.utils.isAddress(toAddress) && amount > 0) {
+                try {
+                    const result = await this._rpc({
+                        route: '/web3_wallet/estimate_gas',
+                        params: {
+                            to_address: toAddress,
+                            amount: amount,
+                            wallet_id: this.wallet.id
+                        }
+                    });
+
+                    if (result.success) {
+                        this.$('.o_gas_estimate').text(result.gas_estimate);
+                        this.$('.o_total_cost').text(
+                            `${parseFloat(amount) + parseFloat(result.total_gas_cost)} ${this.wallet.currency_symbol || 'ETH'}`
+                        );
+                    }
+                } catch (error) {
+                    console.error('Error estimating gas:', error);
+                }
+            }
+        },
+
+        _onSendTransaction: async function() {
+            const toAddress = this.$('.o_to_address').val();
+            const amount = this.$('.o_amount').val();
+
+            if (!this.web3.utils.isAddress(toAddress)) {
+                this.displayNotification({
+                    type: 'danger',
+                    title: _t('Error'),
+                    message: _t('Invalid recipient address')
+                });
+                return;
+            }
+
+            if (!amount || parseFloat(amount) <= 0) {
+                this.displayNotification({
+                    type: 'danger',
+                    title: _t('Error'),
+                    message: _t('Invalid amount')
+                });
+                return;
+            }
+
+            this.trigger_up('send_transaction', {
+                to_address: toAddress,
+                amount: amount
+            });
+        },
+
+        clear: function() {
+            this.$('.o_to_address').val('');
+            this.$('.o_amount').val('');
+            this.$('.o_gas_estimate').text('0');
+            this.$('.o_total_cost').text('0');
+        }
+    });
+
+    return TransactionForm;
+});
+=== ./static/src/js/web_wallet.js ===
+odoo.define('web3_wallet.wallet_manager', function (require) {
+    'use strict';
+
+    var core = require('web.core');
+    var Widget = require('web.Widget');
+    var Dialog = require('web.Dialog');
+    var QWeb = core.qweb;
+    var _t = core._t;
+
+    var WalletManager = Widget.extend({
+        template: 'wallet_management',
+        events: {
+            'click .o_connect_wallet': '_onConnectWallet',
+            'click .o_disconnect_wallet': '_onDisconnectWallet',
+            'click .o_send_tx': '_onSendTransaction',
+            'change .o_network_selector': '_onNetworkChange',
+            'input .o_to_address, .o_amount': '_onTransactionInputChange',
+            'click .o_view_explorer': '_onViewExplorer'
+        },
+
+        init: function(parent, options) {
+            this._super.apply(this, arguments);
+            this.web3 = null;
+            this.currentAccount = null;
+            this.currentNetwork = null;
+            this.networks = [];
+            this.transactions = [];
+        },
+
+        start: async function() {
+            await this._super.apply(this, arguments);
+            await this._initializeWeb3();
+            await this._loadNetworks();
+            this._startListeners();
+            return this;
+        },
+
+        // Web3 Initialization
+        _initializeWeb3: async function() {
+            if (typeof window.ethereum !== 'undefined') {
+                this.web3 = new Web3(window.ethereum);
+                this.isMetaMaskInstalled = true;
+            } else {
+                this._showError(_t("Please install MetaMask or another Web3 wallet."));
+                this.isMetaMaskInstalled = false;
+            }
+        },
+
+        // Load Available Networks
+        _loadNetworks: async function() {
+            try {
+                const result = await this._rpc({
+                    route: '/web3_wallet/get_networks',
+                    params: {}
+                });
+                
+                if (result.networks) {
+                    this.networks = result.networks;
+                    this._updateNetworkSelector();
+                }
+            } catch (error) {
+                this._showError(_t("Failed to load networks"));
+            }
+        },
+
+        // Event Listeners
+        _startListeners: function() {
+            if (window.ethereum) {
+                window.ethereum.on('accountsChanged', (accounts) => {
+                    if (accounts.length === 0) {
+                        this._handleDisconnect();
+                    } else {
+                        this._handleAccountChange(accounts[0]);
+                    }
+                });
+
+                window.ethereum.on('chainChanged', (chainId) => {
+                    this._handleNetworkChange(chainId);
+                });
+            }
+        },
+
+        // Connect Wallet
+        _onConnectWallet: async function() {
+            try {
+                if (!this.web3) {
+                    throw new Error(_t("Web3 not initialized"));
+                }
+
+                const accounts = await window.ethereum.request({
+                    method: 'eth_requestAccounts'
+                });
+
+                if (accounts.length === 0) {
+                    throw new Error(_t("No accounts found"));
+                }
+
+                const chainId = await window.ethereum.request({
+                    method: 'eth_chainId'
+                });
+
+                // Register wallet in backend
+                const result = await this._rpc({
+                    route: '/web3_wallet/connect',
+                    params: {
+                        address: accounts[0],
+                        chain_id: parseInt(chainId, 16)
+                    }
+                });
+
+                if (result.success) {
+                    this.currentAccount = accounts[0];
+                    this.currentNetwork = this.networks.find(n => n.chain_id === parseInt(chainId, 16));
+                    this._updateUI();
+                    this._loadTransactionHistory();
+                } else {
+                    throw new Error(result.error);
+                }
+            } catch (error) {
+                this._showError(error.message);
+            }
+        },
+
+        // Disconnect Wallet
+        _onDisconnectWallet: async function() {
+            try {
+                if (this.currentAccount) {
+                    await this._rpc({
+                        route: '/web3_wallet/disconnect',
+                        params: {
+                            address: this.currentAccount
+                        }
+                    });
+                }
+                this._handleDisconnect();
+            } catch (error) {
+                this._showError(error.message);
+            }
+        },
+
+        // Send Transaction
+        _onSendTransaction: async function() {
+            try {
+                const toAddress = this.$('.o_to_address').val();
+                const amount = this.$('.o_amount').val();
+
+                if (!Web3.utils.isAddress(toAddress)) {
+                    throw new Error(_t("Invalid address"));
+                }
+
+                if (!amount || parseFloat(amount) <= 0) {
+                    throw new Error(_t("Invalid amount"));
+                }
+
+                const tx = {
+                    from: this.currentAccount,
+                    to: toAddress,
+                    value: Web3.utils.toWei(amount.toString(), 'ether'),
+                    gas: 21000, // Standard gas limit for ETH transfers
+                };
+
+                // Send transaction
+                const txHash = await window.ethereum.request({
+                    method: 'eth_sendTransaction',
+                    params: [tx],
+                });
+
+                this._showSuccess(_t("Transaction sent: ") + txHash);
+                this._loadTransactionHistory();
+            } catch (error) {
+                this._showError(error.message);
+            }
+        },
+
+        // Network Change Handler
+        _onNetworkChange: async function(ev) {
+            const chainId = parseInt($(ev.currentTarget).val());
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: '0x' + chainId.toString(16) }],
+                });
+            } catch (error) {
+                this._showError(error.message);
+            }
+        },
+
+        // UI Updates
+        _updateUI: function() {
+            if (this.currentAccount) {
+                this.$('.o_wallet_address').val(this.currentAccount);
+                this.$('.o_connect_wallet').addClass('d-none');
+                this.$('.o_disconnect_wallet').removeClass('d-none');
+                this._updateBalance();
+            } else {
+                this.$('.o_wallet_address').val('');
+                this.$('.o_connect_wallet').removeClass('d-none');
+                this.$('.o_disconnect_wallet').addClass('d-none');
+                this.$('.o_wallet_balance').text('0');
+            }
+        },
+
+        _updateBalance: async function() {
+            if (this.currentAccount && this.web3) {
+                try {
+                    const balance = await this.web3.eth.getBalance(this.currentAccount);
+                    const balanceEth = Web3.utils.fromWei(balance, 'ether');
+                    this.$('.o_wallet_balance').text(
+                        `${parseFloat(balanceEth).toFixed(4)} ${this.currentNetwork?.currency_symbol || 'ETH'}`
+                    );
+                } catch (error) {
+                    console.error('Error fetching balance:', error);
+                }
+            }
+        },
+
+        _updateNetworkSelector: function() {
+            const $selector = this.$('.o_network_selector');
+            $selector.empty();
+            this.networks.forEach(network => {
+                $selector.append(new Option(network.name, network.chain_id));
+            });
+        },
+
+        // Transaction History
+        _loadTransactionHistory: async function() {
+            if (!this.currentAccount) return;
+
+            try {
+                const result = await this._rpc({
+                    route: '/web3_wallet/get_transactions',
+                    params: {
+                        address: this.currentAccount
+                    }
+                });
+
+                if (result.transactions) {
+                    this._renderTransactionHistory(result.transactions);
+                }
+            } catch (error) {
+                console.error('Error loading transactions:', error);
+            }
+        },
+
+        _renderTransactionHistory: function(transactions) {
+            const $tbody = this.$('.o_history_tbody');
+            $tbody.empty();
+
+            transactions.forEach(tx => {
+                const isSent = tx.from_address.toLowerCase() === this.currentAccount.toLowerCase();
+                const $row = $('<tr>').append(
+                    $('<td>').text(isSent ? _t('Sent') : _t('Received')),
+                    $('<td>').text(`${tx.value} ${this.currentNetwork?.currency_symbol || 'ETH'}`),
+                    $('<td>').text(isSent ? tx.to_address : tx.from_address),
+                    $('<td>').append(
+                        $('<span>')
+                            .addClass(`o_tx_status ${tx.status}`)
+                            .text(tx.status)
+                    ),
+                    $('<td>').append(
+                        $('<a>')
+                            .attr('href', `${this.currentNetwork?.explorer_url}/tx/${tx.hash}`)
+                            .attr('target', '_blank')
+                            .append($('<i>').addClass('fa fa-external-link'))
+                    )
+                );
+                $tbody.append($row);
+            });
+        },
+
+        // Utility Functions
+        _showError: function(message) {
+            this.do_warn(_t("Error"), message);
+        },
+
+        _showSuccess: function(message) {
+            this.do_notify(_t("Success"), message);
+        },
+
+        _handleDisconnect: function() {
+            this.currentAccount = null;
+            this.currentNetwork = null;
+            this._updateUI();
+            this.$('.o_history_tbody').empty();
+        },
+
+        _handleAccountChange: function(account) {
+            this.currentAccount = account;
+            this._updateUI();
+            this._loadTransactionHistory();
+        },
+
+        _handleNetworkChange: async function(chainId) {
+            const networkId = parseInt(chainId, 16);
+            this.currentNetwork = this.networks.find(n => n.chain_id === networkId);
+            this.$('.o_network_selector').val(networkId);
+            await this._updateBalance();
+            this._loadTransactionHistory();
+        },
+
+        destroy: function() {
+            if (window.ethereum) {
+                window.ethereum.removeAllListeners();
+            }
+            this._super.apply(this, arguments);
+        }
+    });
+
+    core.action_registry.add('web3_wallet.wallet_manager', WalletManager);
+
+    return WalletManager;
+});
+=== ./allfiles.txt ===
+=== ./security/web3_wallet_security.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="module_category_web3_wallet" model="ir.module.category">
+            <field name="name">Web3 Wallet</field>
+            <field name="description">Manage Web3 wallets and transactions</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <record id="group_web3_wallet_user" model="res.groups">
+            <field name="name">User</field>
+            <field name="category_id" ref="module_category_web3_wallet"/>
+            <field name="implied_ids" eval="[(4, ref('base.group_user'))]"/>
+        </record>
+
+        <record id="group_web3_wallet_manager" model="res.groups">
+            <field name="name">Manager</field>
+            <field name="category_id" ref="module_category_web3_wallet"/>
+            <field name="implied_ids" eval="[(4, ref('group_web3_wallet_user'))]"/>
+            <field name="users" eval="[(4, ref('base.user_root')), (4, ref('base.user_admin'))]"/>
+        </record>
+
+        <!-- Record Rules -->
+        <record id="web3_wallet_personal_rule" model="ir.rule">
+            <field name="name">Personal Wallets Only</field>
+            <field name="model_id" ref="model_web3_wallet"/>
+            <field name="domain_force">[('user_id','=',user.id)]</field>
+            <field name="groups" eval="[(4, ref('group_web3_wallet_user'))]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="False"/>
+        </record>
+    </data>
+</odoo>
+=== ./security/ir.model.access.csv ===
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_web3_wallet_user,web3.wallet.user,model_web3_wallet,web3_wallet.group_web3_wallet_user,1,1,1,0
+access_web3_wallet_manager,web3.wallet.manager,model_web3_wallet,web3_wallet.group_web3_wallet_manager,1,1,1,1
+access_web3_transaction_user,web3.transaction.user,model_web3_transaction,web3_wallet.group_web3_wallet_user,1,1,1,0
+access_web3_transaction_manager,web3.transaction.manager,model_web3_transaction,web3_wallet.group_web3_wallet_manager,1,1,1,1
+access_web3_network_user,web3.network.user,model_web3_network,web3_wallet.group_web3_wallet_user,1,0,0,0
+access_web3_network_manager,web3.network.manager,model_web3_network,web3_wallet.group_web3_wallet_manager,1,1,1,1
+access_send_transaction_wizard_user,send.transaction.wizard.user,model_send_transaction_wizard,web3_wallet.group_web3_wallet_user,1,1,1,0
+=== ./data/web3_network_data.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Ethereum Mainnet -->
+        <record id="network_ethereum_mainnet" model="web3.network">
+            <field name="name">Ethereum Mainnet</field>
+            <field name="chain_id">1</field>
+            <field name="currency_symbol">ETH</field>
+            <field name="rpc_url">https://eth-mainnet.public.blastapi.io</field>
+            <field name="explorer_url">https://etherscan.io</field>
+            <field name="is_active">True</field>
+        </record>
+
+        <!-- PulseChain -->
+        <record id="network_pulsechain" model="web3.network">
+            <field name="name">PulseChain</field>
+            <field name="chain_id">369</field>
+            <field name="currency_symbol">PLS</field>
+            <field name="rpc_url">https://rpc.pulsechain.com</field>
+            <field name="explorer_url">https://scan.pulsechain.com</field>
+            <field name="is_active">True</field>
+        </record>
+
+        <!-- Polygon -->
+        <record id="network_polygon" model="web3.network">
+            <field name="name">Polygon</field>
+            <field name="chain_id">137</field>
+            <field name="currency_symbol">MATIC</field>
+            <field name="rpc_url">https://polygon-rpc.com</field>
+            <field name="explorer_url">https://polygonscan.com</field>
+            <field name="is_active">True</field>
+        </record>
+    </data>
+</odoo>
+=== ./data/ir_cron.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Sync wallet balances -->
+        <record id="ir_cron_sync_wallet_balances" model="ir.cron">
+            <field name="name">Web3: Sync Wallet Balances</field>
+            <field name="model_id" ref="model_web3_wallet"/>
+            <field name="state">code</field>
+            <field name="code">model._compute_balance()</field>
+            <field name="interval_number">5</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Sync transaction history -->
+        <record id="ir_cron_sync_transaction_history" model="ir.cron">
+            <field name="name">Web3: Sync Transaction History</field>
+            <field name="model_id" ref="model_web3_wallet"/>
+            <field name="state">code</field>
+            <field name="code">model.search([('state', '=', 'connected')]).fetch_transaction_history()</field>
+            <field name="interval_number">10</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>
+=== ./views/menu_items.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Main Menu -->
+    <menuitem id="menu_web3_wallet_root"
+              name="Web3 Wallet"
+              web_icon="web3_wallet,static/description/icon.png"
+              sequence="50"/>
+
+    <!-- Wallets Menu -->
+    <menuitem id="menu_web3_wallet_wallets"
+              name="My Wallets"
+              parent="menu_web3_wallet_root"
+              action="action_web3_wallet"
+              sequence="10"/>
+
+    <!-- Transactions Menu -->
+    <menuitem id="menu_web3_wallet_transactions"
+              name="Transactions"
+              parent="menu_web3_wallet_root"
+              action="action_web3_transaction"
+              sequence="20"/>
+
+    <!-- Networks Menu -->
+    <menuitem id="menu_web3_wallet_networks"
+              name="Networks"
+              parent="menu_web3_wallet_root"
+              action="action_web3_network"
+              sequence="30"
+              groups="web3_wallet.group_web3_wallet_manager"/>
+</odoo>
+=== ./views/web3_wallet_templates.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="assets_backend" name="web3_wallet assets" inherit_id="web.assets_backend">
+        <xpath expr="." position="inside">
+            <link rel="stylesheet" href="/web3_wallet/static/src/css/web3_wallet.css"/>
+            <script type="text/javascript" src="/web3_wallet/static/src/js/web3_wallet.js"/>
+            <!-- Include Web3 library -->
+            <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/web3/1.8.1/web3.min.js"/>
+        </xpath>
+    </template>
+
+    <template id="wallet_management" name="Wallet Management">
+        <div class="o_web3_wallet_container">
+            <div class="o_wallet_card card">
+                <div class="card-header">
+                    <h3 class="card-title">Wallet Management System</h3>
+                    <p class="card-subtitle mb-2 text-muted">Connect your Web3 wallet to manage transactions</p>
+                </div>
+                <div class="card-body">
+                    <div class="o_wallet_tabs">
+                        <ul class="nav nav-tabs" role="tablist">
+                            <li class="nav-item">
+                                <a class="nav-link active" id="wallet-tab" data-toggle="tab" href="#wallet" role="tab">
+                                    <i class="fa fa-wallet mr-2"/>Wallet
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" id="send-tab" data-toggle="tab" href="#send" role="tab">
+                                    <i class="fa fa-paper-plane mr-2"/>Send
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" id="history-tab" data-toggle="tab" href="#history" role="tab">
+                                    <i class="fa fa-history mr-2"/>History
+                                </a>
+                            </li>
+                        </ul>
+                        
+                        <div class="tab-content mt-3">
+                            <!-- Wallet Tab -->
+                            <div class="tab-pane fade show active" id="wallet" role="tabpanel">
+                                <div class="o_wallet_info">
+                                    <div class="form-group">
+                                        <label>Connected Address</label>
+                                        <div class="input-group">
+                                            <input type="text" class="form-control o_wallet_address" readonly="1"/>
+                                            <div class="input-group-append">
+                                                <button class="btn btn-outline-secondary o_view_explorer" type="button">
+                                                    <i class="fa fa-external-link"/>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Balance</label>
+                                        <div class="o_wallet_balance"/>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Network</label>
+                                        <select class="form-control o_network_selector"/>
+                                    </div>
+                                    <button class="btn btn-primary o_connect_wallet">Connect Wallet</button>
+                                    <button class="btn btn-secondary o_disconnect_wallet d-none">Disconnect</button>
+                                </div>
+                            </div>
+
+                            <!-- Send Tab -->
+                            <div class="tab-pane fade" id="send" role="tabpanel">
+                                <div class="o_send_transaction">
+                                    <div class="form-group">
+                                        <label>To Address</label>
+                                        <input type="text" class="form-control o_to_address"/>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Amount</label>
+                                        <div class="input-group">
+                                            <input type="number" step="0.000001" class="form-control o_amount"/>
+                                            <div class="input-group-append">
+                                                <span class="input-group-text o_currency_symbol">ETH</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="o_transaction_details">
+                                        <small class="text-muted">Gas Estimate: <span class="o_gas_estimate">0</span> Gwei</small>
+                                        <br/>
+                                        <small class="text-muted">Total Cost: <span class="o_total_cost">0</span></small>
+                                    </div>
+                                    <button class="btn btn-primary o_send_tx mt-3">Send Transaction</button>
+                                </div>
+                            </div>
+
+                            <!-- History Tab -->
+                            <div class="tab-pane fade" id="history" role="tabpanel">
+                                <div class="o_transaction_history">
+                                    <div class="table-responsive">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Type</th>
+                                                    <th>Amount</th>
+                                                    <th>Address</th>
+                                                    <th>Status</th>
+                                                    <th>Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="o_history_tbody"/>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer text-muted">
+                    Powered by Web3 Technology
+                </div>
+            </div>
+        </div>
+    </template>
+</odoo>
+=== ./views/web3_wallet_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Wallet Views -->
+    <record id="view_web3_wallet_tree" model="ir.ui.view">
+        <field name="name">web3.wallet.tree</field>
+        <field name="model">web3.wallet</field>
+        <field name="arch" type="xml">
+            <tree string="Wallets">
+                <field name="name"/>
+                <field name="address"/>
+                <field name="network_id"/>
+                <field name="balance"/>
+                <field name="state" widget="badge" decoration-success="state == 'connected'" decoration-danger="state == 'disconnected'"/>
+                <field name="last_sync"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_web3_wallet_form" model="ir.ui.view">
+        <field name="name">web3.wallet.form</field>
+        <field name="model">web3.wallet</field>
+        <field name="arch" type="xml">
+            <form string="Wallet">
+                <header>
+                    <button name="action_connect_wallet" 
+                            string="Connect" 
+                            type="object" 
+                            class="oe_highlight"
+                            attrs="{'invisible': [('state', '=', 'connected')]}"/>
+                    <button name="action_disconnect_wallet" 
+                            string="Disconnect" 
+                            type="object"
+                            attrs="{'invisible': [('state', '=', 'disconnected')]}"/>
+                    <button name="action_send_transaction" 
+                            string="Send" 
+                            type="object"
+                            class="btn-primary"
+                            attrs="{'invisible': [('state', '!=', 'connected')]}"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="Wallet Name"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="address"/>
+                            <field name="network_id"/>
+                            <field name="user_id" groups="web3_wallet.group_web3_wallet_manager"/>
+                        </group>
+                        <group>
+                            <field name="balance"/>
+                            <field name="last_sync"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Transactions" name="transactions">
+                            <field name="transaction_ids">
+                                <tree>
+                                    <field name="create_date"/>
+                                    <field name="tx_hash"/>
+                                    <field name="from_address"/>
+                                    <field name="to_address"/>
+                                    <field name="value"/>
+                                    <field name="status"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_web3_wallet" model="ir.actions.act_window">
+        <field name="name">Wallets</field>
+        <field name="res_model">web3.wallet</field>
+        <field name="view_mode">tree,form</field>
+        <field name="domain">[('user_id', '=', uid)]</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Connect your first Web3 wallet!
+            </p>
+            <p>
+                Click the create button to add a new wallet.
+            </p>
+        </field>
+    </record>
+
+    <!-- Transaction Views -->
+    <record id="view_web3_transaction_tree" model="ir.ui.view">
+        <field name="name">web3.transaction.tree</field>
+        <field name="model">web3.transaction</field>
+        <field name="arch" type="xml">
+            <tree string="Transactions" create="false">
+                <field name="create_date"/>
+                <field name="wallet_id"/>
+                <field name="tx_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="status" widget="badge" decoration-success="status == 'confirmed'" decoration-warning="status == 'pending'" decoration-danger="status == 'failed'"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_web3_transaction_form" model="ir.ui.view">
+        <field name="name">web3.transaction.form</field>
+        <field name="model">web3.transaction</field>
+        <field name="arch" type="xml">
+            <form string="Transaction" create="false">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="wallet_id"/>
+                            <field name="tx_hash"/>
+                            <field name="from_address"/>
+                            <field name="to_address"/>
+                        </group>
+                        <group>
+                            <field name="value"/>
+                            <field name="gas_price"/>
+                            <field name="gas_used"/>
+                            <field name="status"/>
+                            <field name="network_id"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_web3_transaction" model="ir.actions.act_window">
+        <field name="name">Transactions</field>
+        <field name="res_model">web3.transaction</field>
+        <field name="view_mode">tree,form</field>
+        <field name="domain">[('wallet_id.user_id', '=', uid)]</field>
+    </record>
+
+    <!-- Network Views -->
+    <record id="view_web3_network_tree" model="ir.ui.view">
+        <field name="name">web3.network.tree</field>
+        <field name="model">web3.network</field>
+        <field name="arch" type="xml">
+            <tree string="Networks">
+                <field name="name"/>
+                <field name="chain_id"/>
+                <field name="currency_symbol"/>
+                <field name="rpc_url"/>
+                <field name="explorer_url"/>
+                <field name="is_active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_web3_network_form" model="ir.ui.view">
+        <field name="name">web3.network.form</field>
+        <field name="model">web3.network</field>
+        <field name="arch" type="xml">
+            <form string="Network">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="chain_id"/>
+                            <field name="currency_symbol"/>
+                        </group>
+                        <group>
+                            <field name="rpc_url"/>
+                            <field name="explorer_url"/>
+                            <field name="is_active"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_web3_network" model="ir.actions.act_window">
+        <field name="name">Networks</field>
+        <field name="res_model">web3.network</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+</odoo>
+=== ./controllers/__init__.py ===
+from . import main
+=== ./controllers/main.py ===
+from odoo import http, _
+from odoo.http import request
+import json
+import logging
+from web3 import Web3
+
+_logger = logging.getLogger(__name__)
+
+class Web3WalletController(http.Controller):
+    
+    @http.route('/web3_wallet/connect', type='json', auth="user")
+    def connect_wallet(self, address, chain_id):
+        """Connect a Web3 wallet"""
+        try:
+            # Validate the address
+            if not Web3.is_address(address):
+                return {'error': _('Invalid wallet address')}
+
+            # Get the network
+            network = request.env['web3.network'].sudo().search([('chain_id', '=', chain_id)], limit=1)
+            if not network:
+                return {'error': _('Unsupported network')}
+
+            # Create or get the wallet
+            wallet = request.env['web3.wallet'].sudo().search([
+                ('address', '=', address),
+                ('user_id', '=', request.env.user.id)
+            ], limit=1)
+
+            if not wallet:
+                wallet = request.env['web3.wallet'].sudo().create({
+                    'name': f'Wallet {address[:8]}',
+                    'address': address,
+                    'user_id': request.env.user.id,
+                    'network_id': network.id,
+                })
+            
+            wallet.action_connect_wallet()
+            
+            return {
+                'success': True,
+                'wallet_id': wallet.id,
+                'address': wallet.address,
+                'balance': wallet.balance,
+                'network': {
+                    'name': network.name,
+                    'chain_id': network.chain_id,
+                    'currency_symbol': network.currency_symbol
+                }
+            }
+        except Exception as e:
+            _logger.error(f"Error connecting wallet: {str(e)}")
+            return {'error': _('Failed to connect wallet')}
+
+    @http.route('/web3_wallet/disconnect', type='json', auth="user")
+    def disconnect_wallet(self, wallet_id):
+        """Disconnect a Web3 wallet"""
+        try:
+            wallet = request.env['web3.wallet'].sudo().browse(wallet_id)
+            if wallet.exists() and wallet.user_id.id == request.env.user.id:
+                wallet.action_disconnect_wallet()
+                return {'success': True}
+            return {'error': _('Wallet not found')}
+        except Exception as e:
+            _logger.error(f"Error disconnecting wallet: {str(e)}")
+            return {'error': _('Failed to disconnect wallet')}
+
+    @http.route('/web3_wallet/get_networks', type='json', auth="user")
+    def get_networks(self):
+        """Get list of supported networks"""
+        networks = request.env['web3.network'].sudo().search([('is_active', '=', True)])
+        return {
+            'networks': [{
+                'id': network.id,
+                'name': network.name,
+                'chain_id': network.chain_id,
+                'currency_symbol': network.currency_symbol,
+                'explorer_url': network.explorer_url
+            } for network in networks]
+        }
+
+    @http.route('/web3_wallet/get_transactions', type='json', auth="user")
+    def get_transactions(self, wallet_id, limit=20):
+        """Get transaction history for a wallet"""
+        try:
+            wallet = request.env['web3.wallet'].sudo().browse(wallet_id)
+            if not wallet.exists() or wallet.user_id.id != request.env.user.id:
+                return {'error': _('Wallet not found')}
+
+            transactions = wallet.transaction_ids.sorted(key='timestamp', reverse=True)[:limit]
+            
+            return {
+                'success': True,
+                'transactions': [{
+                    'hash': tx.tx_hash,
+                    'from_address': tx.from_address,
+                    'to_address': tx.to_address,
+                    'value': tx.value,
+                    'timestamp': tx.timestamp,
+                    'status': tx.status,
+                    'type': 'sent' if tx.from_address.lower() == wallet.address.lower() else 'received'
+                } for tx in transactions]
+            }
+        except Exception as e:
+            _logger.error(f"Error fetching transactions: {str(e)}")
+            return {'error': _('Failed to fetch transactions')}
+
+    @http.route('/web3_wallet/estimate_gas', type='json', auth="user")
+    def estimate_gas(self, wallet_id, to_address, amount):
+        """Estimate gas for a transaction"""
+        try:
+            wallet = request.env['web3.wallet'].sudo().browse(wallet_id)
+            if not wallet.exists() or wallet.user_id.id != request.env.user.id:
+                return {'error': _('Wallet not found')}
+
+            w3 = Web3(Web3.HTTPProvider(wallet.network_id.rpc_url))
+            
+            # Estimate gas for a standard ETH transfer
+            gas_estimate = 21000  # Standard ETH transfer
+            gas_price = w3.eth.gas_price
+            
+            return {
+                'success': True,
+                'gas_estimate': gas_estimate,
+                'gas_price': w3.from_wei(gas_price, 'gwei'),
+                'total_gas_cost': w3.from_wei(gas_estimate * gas_price, 'ether')
+            }
+        except Exception as e:
+            _logger.error(f"Error estimating gas: {str(e)}")
+            return {'error': _('Failed to estimate gas')}

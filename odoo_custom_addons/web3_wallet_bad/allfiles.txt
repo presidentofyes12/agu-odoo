@@ -1,0 +1,1788 @@
+Home dir: ~/oldhome/home/impromise/Downloads/Telegram Desktop/nostr-w-relay-main/agu-app/src/odoo-nostr-project/odoo_custom_addons/web3_wallet/
+
+=== ./models/wallet_transaction.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError, ValidationError
+from eth_account.messages import encode_defunct
+import json
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class WalletTransaction(models.Model):
+    _name = 'wallet.transaction'
+    _description = 'Wallet Transaction'
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _order = 'create_date desc'
+
+    name = fields.Char(required=True, tracking=True)
+    user_id = fields.Many2one('res.users', required=True, readonly=True,
+                             default=lambda self: self.env.user)
+    from_address = fields.Char('From Address', required=True, tracking=True)
+    to_address = fields.Char('To Address', required=True, tracking=True)
+    value = fields.Float('Value', digits=(18, 8), required=True, tracking=True)
+    gas_price = fields.Float('Gas Price (Gwei)', digits=(18, 2))
+    gas_limit = fields.Integer('Gas Limit')
+    gas_used = fields.Integer('Gas Used', readonly=True)
+    
+    state = fields.Selection([
+        ('draft', 'Draft'),
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled')
+    ], default='draft', tracking=True)
+    
+    transaction_hash = fields.Char('Transaction Hash', readonly=True)
+    block_number = fields.Integer('Block Number', readonly=True)
+    block_timestamp = fields.Datetime('Block Timestamp', readonly=True)
+    network_id = fields.Many2one('wallet.config', required=True)
+    nonce = fields.Integer('Nonce', readonly=True)
+    confirmation_blocks = fields.Integer('Confirmations', readonly=True)
+    
+    # Technical fields
+    raw_transaction = fields.Text('Raw Transaction', readonly=True)
+    signed_transaction = fields.Text('Signed Transaction', readonly=True)
+    error_message = fields.Text('Error Message', readonly=True)
+
+    @api.model
+    def create(self, vals):
+        if not vals.get('name'):
+            vals['name'] = self.env['ir.sequence'].next_by_code('wallet.transaction')
+        return super().create(vals)
+
+    @api.constrains('value')
+    def _check_value(self):
+        for record in self:
+            if record.value <= 0:
+                raise ValidationError("Transaction value must be positive")
+
+    def action_send(self):
+        """Send transaction to blockchain"""
+        self.ensure_one()
+        if self.state != 'draft':
+            raise UserError("Only draft transactions can be sent")
+        
+        try:
+            web3 = self.network_id.get_web3_connection()
+            # Verify balance
+            balance = web3.eth.get_balance(self.from_address)
+            total_cost = web3.to_wei(self.value, 'ether') + (self.gas_limit * web3.to_wei(self.gas_price, 'gwei'))
+            if balance < total_cost:
+                raise UserError("Insufficient balance for transaction")
+
+            # Prepare transaction
+            tx_params = {
+                'from': self.from_address,
+                'to': self.to_address,
+                'value': web3.to_wei(self.value, 'ether'),
+                'gas': self.gas_limit,
+                'gasPrice': web3.to_wei(self.gas_price, 'gwei'),
+                'nonce': web3.eth.get_transaction_count(self.from_address),
+            }
+            
+            # Get private key from user
+            private_key = self.user_id._get_wallet_private_key()
+            if not private_key:
+                raise UserError("Private key not available")
+            
+            # Sign and send transaction
+            signed_tx = web3.eth.account.sign_transaction(tx_params, private_key)
+            tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            
+            self.write({
+                'state': 'pending',
+                'transaction_hash': web3.to_hex(tx_hash),
+                'nonce': tx_params['nonce'],
+                'raw_transaction': json.dumps(tx_params),
+                'signed_transaction': web3.to_hex(signed_tx.rawTransaction)
+            })
+            
+            return True
+            
+        except Exception as e:
+            self.write({
+                'state': 'failed',
+                'error_message': str(e)
+            })
+            raise UserError(f"Transaction failed: {str(e)}")
+
+    def clean_old_transactions(self):
+        """Clean old transaction records"""
+        # Keep records for last 90 days
+        cutoff_date = fields.Datetime.now() - timedelta(days=90)
+        old_records = self.search([
+            ('create_date', '<', cutoff_date),
+            ('state', 'in', ['completed', 'failed', 'cancelled'])
+        ])
+        
+        if old_records:
+            _logger.info(f"Cleaning {len(old_records)} old transaction records")
+            old_records.unlink()
+        
+        return True
+
+    def action_cancel(self):
+        """Cancel the transaction"""
+        self.ensure_one()
+        if self.state not in ['draft', 'failed']:
+            raise UserError("Only draft or failed transactions can be cancelled")
+        
+        self.write({
+            'state': 'cancelled',
+            'error_message': 'Transaction cancelled by user'
+        })
+        return True
+
+    def action_retry(self):
+        """Retry failed transaction with increased gas price"""
+        self.ensure_one()
+        if self.state != 'failed':
+            raise UserError("Only failed transactions can be retried")
+        
+        # Create new transaction with increased gas price
+        new_tx = self.copy({
+            'state': 'draft',
+            'transaction_hash': False,
+            'error_message': False,
+            'gas_price': self.gas_price * 1.1  # Increase gas price by 10%
+        })
+        
+        # Open the new transaction form
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'wallet.transaction',
+            'res_id': new_tx.id,
+            'view_mode': 'form',
+            'target': 'current',
+        }
+
+    def update_pending_transactions(self):
+        """Update status of pending transactions"""
+        pending_txs = self.search([('state', '=', 'pending')])
+        for tx in pending_txs:
+            try:
+                web3 = tx.network_id.get_web3_connection()
+                receipt = web3.eth.get_transaction_receipt(tx.transaction_hash)
+                if receipt:
+                    if receipt['status'] == 1:
+                        tx.write({
+                            'state': 'completed',
+                            'gas_used': receipt['gasUsed'],
+                            'block_number': receipt['blockNumber'],
+                            'block_timestamp': fields.Datetime.now(),
+                            'confirmation_blocks': web3.eth.block_number - receipt['blockNumber']
+                        })
+                    else:
+                        tx.write({
+                            'state': 'failed',
+                            'error_message': 'Transaction reverted on chain'
+                        })
+            except Exception as e:
+                _logger.error(f"Failed to update transaction {tx.transaction_hash}: {str(e)}")
+=== ./models/__init__.py ===
+from . import wallet_config
+from . import wallet_connection
+from . import wallet_transaction
+from . import res_users
+from . import wallet_utils
+=== ./models/res_users.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError, ValidationError
+from eth_account import Account
+import secrets
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class ResUsers(models.Model):
+    _inherit = 'res.users'
+
+    eth_address = fields.Char('Ethereum Address', readonly=True, copy=False, 
+                             tracking=True)
+    encrypted_key = fields.Text('Encrypted Private Key', 
+                              copy=False, readonly=True,
+                              groups="web3_wallet.group_wallet_manager")
+    active_network_id = fields.Many2one('wallet.config', string='Active Network',
+                                      domain=[('active', '=', True)])
+    wallet_balance = fields.Float('Wallet Balance', digits=(18, 8), 
+                                compute='_compute_wallet_balance',
+                                tracking=True)
+    wallet_state = fields.Selection([
+        ('none', 'No Wallet'),
+        ('active', 'Active'),
+        ('inactive', 'Inactive')
+    ], string='Wallet Status', compute='_compute_wallet_state',
+       store=True, default='none')
+    transaction_count = fields.Integer('Transaction Count', 
+                                     compute='_compute_transaction_count')
+    last_activity = fields.Datetime('Last Activity')
+
+    _sql_constraints = [
+        ('eth_address_unique', 
+         'UNIQUE(eth_address)',
+         'This Ethereum address is already registered!')
+    ]
+
+    @api.depends('eth_address')
+    def _compute_wallet_state(self):
+        for user in self:
+            if user.eth_address:
+                user.wallet_state = 'active'
+            else:
+                user.wallet_state = 'none'
+
+    @api.model
+    def get_wallet_dashboard_data(self):
+        """Get data for wallet dashboard"""
+        user = self.env.user
+        data = {
+            'has_wallet': bool(user.eth_address),
+            'address': user.eth_address or False,
+            'balance': user.wallet_balance,
+            'currency': user.active_network_id.network_currency if user.active_network_id else 'ETH',
+            'transaction_count': user.transaction_count,
+            'pending_count': self.env['wallet.transaction'].search_count([
+                ('user_id', '=', user.id),
+                ('state', '=', 'pending')
+            ]),
+            'network_name': user.active_network_id.name if user.active_network_id else 'Not Connected',
+            'gas_price': False,
+        }
+        
+        if user.active_network_id:
+            try:
+                web3 = user.active_network_id.get_web3_connection()
+                data['gas_price'] = float(web3.from_wei(web3.eth.gas_price, 'gwei'))
+            except Exception as e:
+                _logger.error(f"Failed to get gas price: {str(e)}")
+        
+        return data
+    
+    @api.depends('eth_address', 'active_network_id')
+    def _compute_wallet_balance(self):
+        for user in self:
+            balance = 0.0
+            if user.eth_address and user.active_network_id:
+                try:
+                    web3 = user.active_network_id.get_web3_connection()
+                    balance_wei = web3.eth.get_balance(user.eth_address)
+                    balance = float(web3.from_wei(balance_wei, 'ether'))
+                except Exception as e:
+                    _logger.error(f"Failed to get balance: {str(e)}")
+            user.wallet_balance = balance
+
+    @api.depends('eth_address')
+    def _compute_transaction_count(self):
+        for user in self:
+            count = 0
+            if user.eth_address:
+                count = self.env['wallet.transaction'].search_count([
+                    '|',
+                    ('from_address', '=', user.eth_address),
+                    ('to_address', '=', user.eth_address)
+                ])
+            user.transaction_count = count
+
+    def create_web3_wallet(self):
+        """Create new Ethereum wallet"""
+        self.ensure_one()
+        if self.eth_address:
+            raise UserError("User already has a wallet associated")
+
+        try:
+            # Generate new account
+            account = Account.create(extra_entropy=secrets.token_bytes(32))
+            private_key = account.key.hex()
+            
+            # Encrypt private key before storage
+            encrypted_key = self.env['wallet.utils'].encrypt_private_key(private_key)
+            
+            # Update user record
+            self.write({
+                'eth_address': account.address,
+                'encrypted_private_key': encrypted_key,
+                'last_activity': fields.Datetime.now()
+            })
+
+            # Create default connection
+            default_network = self.env['wallet.config'].search(
+                [('active', '=', True)], limit=1)
+            if default_network:
+                self.env['wallet.connection'].create({
+                    'user_id': self.id,
+                    'network_id': default_network.id,
+                    'address': account.address,
+                    'status': 'connected'
+                })
+
+            return {
+                'address': account.address,
+                'private_key': private_key,  # Return only for initial setup
+            }
+
+        except Exception as e:
+            _logger.error(f"Wallet creation failed: {str(e)}")
+            raise UserError(f"Failed to create wallet: {str(e)}")
+
+    def import_wallet(self, private_key):
+        """Import existing wallet using private key"""
+        self.ensure_one()
+        if self.eth_address:
+            raise UserError("User already has a wallet associated")
+
+        try:
+            # Validate and derive address from private key
+            if private_key.startswith('0x'):
+                private_key = private_key[2:]
+            account = Account.from_key(private_key)
+            
+            # Encrypt private key
+            encrypted_key = self.env['wallet.utils'].encrypt_private_key(private_key)
+            
+            # Update user record
+            self.write({
+                'eth_address': account.address,
+                'encrypted_private_key': encrypted_key,
+                'last_activity': fields.Datetime.now()
+            })
+
+            return {'address': account.address}
+
+        except Exception as e:
+            _logger.error(f"Wallet import failed: {str(e)}")
+            raise UserError(f"Failed to import wallet: {str(e)}")
+
+    def _get_wallet_private_key(self):
+        """Get decrypted private key for transaction signing"""
+        self.ensure_one()
+        if not self.encrypted_key:
+            return None
+            
+        try:
+            return self.env['wallet.utils'].decrypt_private_key(self.encrypted_key)
+        except Exception as e:
+            _logger.error(f"Failed to decrypt key: {str(e)}")
+            return None
+
+    def action_create_wallet(self):
+        """Create new wallet"""
+        self.ensure_one()
+        if self.eth_address:
+            raise UserError("User already has a wallet")
+
+        try:
+            account = Account.create(extra_entropy=secrets.token_bytes(32))
+            private_key = account.key.hex()
+            
+            # Encrypt private key
+            encrypted_key = self.env['wallet.utils'].encrypt_private_key(private_key)
+            
+            # Update record
+            self.write({
+                'eth_address': account.address,
+                'encrypted_key': encrypted_key,
+                'last_activity': fields.Datetime.now()
+            })
+            
+            # Return address only in notification
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Success',
+                    'message': f'Wallet created with address: {account.address}',
+                    'type': 'success',
+                    'sticky': False,
+                }
+            }
+
+        except Exception as e:
+            _logger.error(f"Wallet creation failed: {str(e)}")
+            raise UserError(f"Failed to create wallet: {str(e)}")
+
+    def action_import_wallet(self):
+        """Open import wallet wizard"""
+        self.ensure_one()
+        return {
+            'name': 'Import Wallet',
+            'type': 'ir.actions.act_window',
+            'res_model': 'wallet.import.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_user_id': self.id}
+        }
+
+    def sign_message(self, message):
+        """Sign a message with the wallet's private key"""
+        self.ensure_one()
+        if not self.eth_address:
+            raise UserError("No wallet associated with this user")
+
+        try:
+            private_key = self._get_wallet_private_key()
+            if not private_key:
+                raise UserError("Private key not available")
+
+            account = Account.from_key(private_key)
+            signed_message = account.sign_message(message)
+            
+            return {
+                'message': message,
+                'signature': signed_message.signature.hex(),
+                'address': account.address
+            }
+
+        except Exception as e:
+            _logger.error(f"Message signing failed: {str(e)}")
+            raise UserError(f"Failed to sign message: {str(e)}")
+
+    @api.model
+    def rotate_encryption_keys(self):
+        """Rotate encryption keys for all stored private keys"""
+        users = self.search([('encrypted_private_key', '!=', False)])
+        utils = self.env['wallet.utils']
+        
+        for user in users:
+            try:
+                # Decrypt with old key
+                private_key = utils.decrypt_private_key(user.encrypted_private_key)
+                # Re-encrypt with new key
+                new_encrypted_key = utils.encrypt_private_key(private_key)
+                user.encrypted_private_key = new_encrypted_key
+            except Exception as e:
+                _logger.error(f"Key rotation failed for user {user.id}: {str(e)}")
+=== ./models/wallet_config.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError, ValidationError
+from web3 import Web3
+import json
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class WalletConfig(models.Model):
+    _name = 'wallet.config'
+    _description = 'Wallet Network Configuration'
+    _inherit = ['mail.thread']
+    _order = 'name'
+
+    name = fields.Char(required=True, tracking=True)
+    network_id = fields.Selection([
+        ('1', 'Ethereum Mainnet'),
+        ('11155111', 'Sepolia Testnet'),
+        ('137', 'Polygon'),
+        ('80001', 'Mumbai Testnet'),
+        ('369', 'PulseChain'),
+        ('943', 'PulseChain Testnet'),
+    ], required=True, tracking=True, string='Network')
+
+    rpc_url = fields.Char('RPC URL', required=True, tracking=True)
+    network_currency = fields.Char(compute='_compute_network_info', store=True)
+    explorer_url = fields.Char(compute='_compute_network_info', store=True)
+    gas_limit = fields.Integer('Gas Limit', default=21000)
+    gas_price_strategy = fields.Selection([
+        ('legacy', 'Legacy'),
+        ('eip1559', 'EIP-1559')
+    ], default='legacy', required=True)
+    
+    # Additional fields
+    gas_price_multiplier = fields.Float('Gas Price Multiplier', default=1.1)
+    max_gas_price = fields.Integer('Max Gas Price (Gwei)', default=500)
+    confirmation_blocks = fields.Integer('Confirmation Blocks', default=12)
+    active = fields.Boolean(default=True, tracking=True)
+    
+    # Technical fields
+    last_block_number = fields.Integer('Last Block Number', readonly=True)
+    last_sync_time = fields.Datetime('Last Sync Time', readonly=True)
+    sync_status = fields.Selection([
+        ('synced', 'Synced'),
+        ('syncing', 'Syncing'),
+        ('error', 'Error')
+    ], default='synced', readonly=True)
+
+    _sql_constraints = [
+        ('unique_active_network', 
+         'UNIQUE(network_id, active)',
+         'Only one configuration can be active per network!')
+    ]
+
+    @api.depends('network_id')
+    def _compute_network_info(self):
+        currencies = {
+            '1': 'ETH',
+            '11155111': 'SEP',
+            '137': 'MATIC',
+            '80001': 'tMATIC',
+            '369': 'PLS',
+            '943': 'tPLS',
+        }
+        explorers = {
+            '1': 'https://etherscan.io',
+            '11155111': 'https://sepolia.etherscan.io',
+            '137': 'https://polygonscan.com',
+            '80001': 'https://mumbai.polygonscan.com',
+            '369': 'https://scan.pulsechain.com',
+            '943': 'https://scan.v3.testnet.pulsechain.com',
+        }
+        for record in self:
+            record.network_currency = currencies.get(record.network_id, 'ETH')
+            record.explorer_url = explorers.get(record.network_id, '')
+
+    def get_web3_connection(self):
+        """Get Web3 connection using current configuration"""
+        self.ensure_one()
+        try:
+            provider = Web3.HTTPProvider(self.rpc_url, request_kwargs={'timeout': 60})
+            web3 = Web3(provider)
+            if not web3.is_connected():
+                raise UserError("Could not connect to blockchain node")
+            return web3
+        except Exception as e:
+            raise UserError(f"Failed to establish Web3 connection: {str(e)}")
+
+    def get_gas_price(self):
+        """Get current gas price based on strategy"""
+        web3 = self.get_web3_connection()
+        if self.gas_price_strategy == 'eip1559':
+            block = web3.eth.get_block('latest')
+            base_fee = block['baseFeePerGas']
+            priority_fee = web3.eth.max_priority_fee
+            max_fee = int(base_fee * self.gas_price_multiplier) + priority_fee
+            return {
+                'maxFeePerGas': min(max_fee, web3.to_wei(self.max_gas_price, 'gwei')),
+                'maxPriorityFeePerGas': priority_fee
+            }
+        else:
+            gas_price = int(web3.eth.gas_price * self.gas_price_multiplier)
+            return {
+                'gasPrice': min(gas_price, web3.to_wei(self.max_gas_price, 'gwei'))
+            }
+
+    def test_connection(self):
+        """Test connection to blockchain node"""
+        self.ensure_one()
+        try:
+            web3 = self.get_web3_connection()
+            block_number = web3.eth.block_number
+            gas_price = web3.from_wei(web3.eth.gas_price, 'gwei')
+            
+            self.write({
+                'last_block_number': block_number,
+                'last_sync_time': fields.Datetime.now(),
+                'sync_status': 'synced'
+            })
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Connection Successful',
+                    'message': f'Connected to network at block {block_number}. '
+                              f'Gas price: {gas_price:.2f} Gwei',
+                    'type': 'success',
+                    'sticky': False,
+                }
+            }
+        except Exception as e:
+            self.sync_status = 'error'
+            raise UserError(f"Connection test failed: {str(e)}")
+
+    def update_gas_prices(self):
+        """Cron job to update gas prices"""
+        configs = self.search([('active', '=', True)])
+        for config in configs:
+            try:
+                web3 = config.get_web3_connection()
+                gas_price = web3.eth.gas_price
+                _logger.info(f"Updated gas price for {config.name}: "
+                           f"{web3.from_wei(gas_price, 'gwei')} Gwei")
+            except Exception as e:
+                _logger.error(f"Failed to update gas price for {config.name}: {str(e)}")
+=== ./models/wallet_connection.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class WalletConnection(models.Model):
+    _name = 'wallet.connection'
+    _description = 'Wallet Connection Status'
+    _rec_name = 'user_id'
+
+    user_id = fields.Many2one('res.users', required=True, ondelete='cascade')
+    network_id = fields.Many2one('wallet.config', required=True)
+    address = fields.Char('Wallet Address', required=True)
+    balance = fields.Float('Balance', digits=(18, 8), readonly=True)
+    last_block_check = fields.Integer('Last Block Check', readonly=True)
+    status = fields.Selection([
+        ('connected', 'Connected'),
+        ('disconnected', 'Disconnected'),
+        ('error', 'Error')
+    ], default='disconnected', required=True)
+    last_connection = fields.Datetime('Last Connection')
+    error_message = fields.Text('Error Message')
+
+    _sql_constraints = [
+        ('unique_user_network', 
+         'UNIQUE(user_id, network_id)',
+         'A user can only have one connection per network!')
+    ]
+
+    def update_balance(self):
+        """Update wallet balance"""
+        for conn in self:
+            try:
+                web3 = conn.network_id.get_web3_connection()
+                balance_wei = web3.eth.get_balance(conn.address)
+                conn.write({
+                    'balance': web3.from_wei(balance_wei, 'ether'),
+                    'last_block_check': web3.eth.block_number,
+                    'status': 'connected',
+                    'last_connection': fields.Datetime.now(),
+                    'error_message': False
+                })
+            except Exception as e:
+                conn.write({
+                    'status': 'error',
+                    'error_message': str(e)
+                })
+                _logger.error(f"Failed to update balance: {str(e)}")
+=== ./models/wallet_utils.py ===
+from odoo import models, api
+from cryptography.fernet import Fernet
+import base64
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class WalletUtils(models.AbstractModel):
+    _name = 'wallet.utils'
+    _description = 'Wallet Utilities'
+
+    @api.model
+    def _get_encryption_key(self):
+        """Get or create encryption key from system parameters"""
+        param = self.env['ir.config_parameter'].sudo()
+        key = param.get_param('web3_wallet.encryption_key')
+        if not key:
+            key = Fernet.generate_key()
+            param.set_param('web3_wallet.encryption_key', key.decode())
+        return key if isinstance(key, bytes) else key.encode()
+
+    @api.model
+    def encrypt_private_key(self, private_key):
+        """Encrypt private key using Fernet symmetric encryption"""
+        try:
+            if not private_key:
+                return None
+                
+            f = Fernet(self._get_encryption_key())
+            encrypted = f.encrypt(private_key.encode())
+            return base64.b64encode(encrypted).decode()
+            
+        except Exception as e:
+            _logger.error(f"Encryption failed: {str(e)}")
+            raise ValueError("Failed to encrypt private key")
+
+    @api.model
+    def decrypt_private_key(self, encrypted_key):
+        """Decrypt private key using Fernet symmetric encryption"""
+        try:
+            if not encrypted_key:
+                return None
+                
+            f = Fernet(self._get_encryption_key())
+            encrypted = base64.b64decode(encrypted_key.encode())
+            decrypted = f.decrypt(encrypted)
+            return decrypted.decode()
+            
+        except Exception as e:
+            _logger.error(f"Decryption failed: {str(e)}")
+            raise ValueError("Failed to decrypt private key")
+
+    @api.model
+    def validate_address(self, address):
+        """Validate Ethereum address format"""
+        if not address:
+            return False
+        if not address.startswith('0x'):
+            address = '0x' + address
+        return self.env['wallet.config'].get_web3_connection().is_address(address)
+=== ./__init__.py ===
+from . import models
+from . import controllers
+from . import wizards
+=== ./wizards/import_wallet_wizard.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class ImportWalletWizard(models.TransientModel):
+    _name = 'wallet.import.wizard'
+    _description = 'Import Existing Wallet'
+
+    private_key = fields.Char('Private Key', required=True)
+    network_id = fields.Many2one('wallet.config', string='Network', required=True,
+                                domain=[('active', '=', True)])
+
+    def action_import_wallet(self):
+        """Import wallet using private key"""
+        self.ensure_one()
+        user = self.env.user
+        
+        try:
+            result = user.import_wallet(self.private_key)
+            if result.get('address'):
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': 'Success',
+                        'message': f'Wallet imported: {result["address"]}',
+                        'type': 'success',
+                        'sticky': False,
+                    }
+                }
+        except Exception as e:
+            raise UserError(str(e))
+=== ./wizards/__init__.py ===
+from . import create_wallet_wizard
+from . import import_wallet_wizard
+from . import send_transaction_wizard
+=== ./wizards/send_transaction_wizard.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class SendTransactionWizard(models.TransientModel):
+    _name = 'wallet.send.transaction.wizard'
+    _description = 'Send Transaction Wizard'
+
+    from_address = fields.Char('From', readonly=True)
+    to_address = fields.Char('To', required=True)
+    amount = fields.Float('Amount', required=True, digits=(18, 8))
+    gas_price = fields.Float('Gas Price (Gwei)', digits=(18, 2))
+    gas_limit = fields.Integer('Gas Limit', default=21000)
+    network_id = fields.Many2one('wallet.config', string='Network', required=True,
+                                domain=[('active', '=', True)])
+
+    @api.model
+    def default_get(self, fields):
+        """Set default values"""
+        res = super().default_get(fields)
+        if self.env.user.eth_address:
+            res['from_address'] = self.env.user.eth_address
+            
+        default_network = self.env['wallet.config'].search(
+            [('active', '=', True)], limit=1)
+        if default_network:
+            res['network_id'] = default_network.id
+            res['gas_price'] = float(default_network.get_gas_price())
+            
+        return res
+
+    def action_send_transaction(self):
+        """Create and send transaction"""
+        self.ensure_one()
+        
+        try:
+            transaction = self.env['wallet.transaction'].create({
+                'name': f'Send {self.amount} ETH to {self.to_address}',
+                'from_address': self.from_address,
+                'to_address': self.to_address,
+                'value': self.amount,
+                'gas_price': self.gas_price,
+                'gas_limit': self.gas_limit,
+                'network_id': self.network_id.id,
+            })
+            
+            transaction.action_send()
+            
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Transaction Sent',
+                    'message': 'Transaction has been submitted to the network',
+                    'type': 'success',
+                    'next': {
+                        'type': 'ir.actions.act_window',
+                        'res_model': 'wallet.transaction',
+                        'res_id': transaction.id,
+                        'view_mode': 'form',
+                    },
+                }
+            }
+            
+        except Exception as e:
+            raise UserError(str(e))
+=== ./wizards/create_wallet_wizard.py ===
+from odoo import models, fields, api
+from odoo.exceptions import UserError
+import logging
+
+_logger = logging.getLogger(__name__)
+
+class CreateWalletWizard(models.TransientModel):
+    _name = 'wallet.create.wizard'
+    _description = 'Create New Wallet Wizard'
+
+    network_id = fields.Many2one('wallet.config', string='Network', required=True,
+                                domain=[('active', '=', True)])
+    show_private_key = fields.Boolean('Show Private Key', default=False)
+
+    def action_create_wallet(self):
+        """Create new wallet for current user"""
+        self.ensure_one()
+        user = self.env.user
+        
+        try:
+            result = user.create_web3_wallet()
+            if result.get('address'):
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': 'Success',
+                        'message': f'Wallet created: {result["address"]}',
+                        'type': 'success',
+                        'sticky': False,
+                    }
+                }
+        except Exception as e:
+            raise UserError(str(e))
+=== ./__manifest__.py ===
+{
+    'name': 'Web3 Wallet',
+    'version': '1.0',
+    'category': 'Blockchain',
+    'summary': 'Ethereum Wallet Management System',
+    'description': """
+        Ethereum Wallet Management System for Odoo
+    """,
+    'author': 'Your Company',
+    'website': 'https://yourcompany.com',
+    'depends': ['base', 'web', 'mail'],
+    'data': [
+        'security/wallet_security.xml',
+        'security/ir.model.access.csv',
+        'data/wallet_data.xml',
+        'data/scheduled_tasks.xml',
+        'views/wallet_actions.xml',
+        'views/wallet_config_views.xml',
+        'views/wallet_transaction_views.xml',
+        'views/res_users_views.xml',
+        'views/web3_wallet_menus.xml',
+    ],
+    'assets': {
+        'web.assets_backend': [
+            '/web3_wallet/static/src/components/dashboard/dashboard.js',
+            '/web3_wallet/static/src/components/dashboard/dashboard.scss',
+            '/web3_wallet/static/src/js/wallet_widget.js',
+        ],
+        'web.assets_qweb': [
+            '/web3_wallet/static/src/components/dashboard/dashboard.xml',
+        ],
+    },
+    'external_dependencies': {
+        'python': ['web3', 'eth_account', 'eth_keys', 'cryptography'],
+    },
+    'installable': True,
+    'application': True,
+    'auto_install': False,
+    'license': 'LGPL-3',
+}
+=== ./static/src/scss/dashboard.scss ===
+/* static/src/scss/dashboard.scss */
+.o_wallet_dashboard {
+    padding: 1rem;
+
+    .o_wallet_dashboard_header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+
+        h1 {
+            margin: 0;
+        }
+
+        .o_wallet_actions {
+            .btn {
+                margin-left: 0.5rem;
+            }
+        }
+    }
+
+    .o_wallet_card {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        margin-bottom: 1rem;
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: #2b2b2b;
+        }
+
+        .o_wallet_address, 
+        .o_wallet_balance,
+        .o_transaction_stats,
+        .o_network_info {
+            margin: 0.5rem 0;
+        }
+
+        .btn-link {
+            padding: 0;
+            margin-left: 0.5rem;
+            color: #007bff;
+
+            &:hover {
+                color: #0056b3;
+                text-decoration: none;
+            }
+        }
+    }
+}
+=== ./static/src/components/dashboard/dashboard.scss ===
+.o_wallet_dashboard {
+    padding: 1rem;
+
+    .o_wallet_dashboard_header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+
+        h1 {
+            margin: 0;
+        }
+
+        .o_wallet_actions {
+            .btn + .btn {
+                margin-left: 0.5rem;
+            }
+        }
+    }
+
+    .o_wallet_card {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        margin-bottom: 1rem;
+        height: 100%;
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: #2b2b2b;
+        }
+
+        .o_wallet_address, 
+        .o_wallet_balance,
+        .o_transaction_stats,
+        .o_network_info {
+            margin: 0.5rem 0;
+        }
+
+        .btn-link {
+            padding: 0;
+            margin-left: 0.5rem;
+            color: var(--primary);
+
+            &:hover {
+                color: var(--primary-darker);
+                text-decoration: none;
+            }
+        }
+    }
+}
+=== ./static/src/components/dashboard/dashboard.xml ===
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="web3_wallet.WalletDashboard">
+        <div class="o_wallet_dashboard">
+            <div class="o_wallet_dashboard_header">
+                <h1>Wallet Dashboard</h1>
+                <div class="o_wallet_actions">
+                    <t t-if="!state.data.has_wallet">
+                        <button class="btn btn-primary" t-on-click="onCreateWallet">
+                            Create Wallet
+                        </button>
+                        <button class="btn btn-secondary" t-on-click="onImportWallet">
+                            Import Wallet
+                        </button>
+                    </t>
+                </div>
+            </div>
+            <div class="o_wallet_dashboard_content">
+                <t t-if="state.loading">
+                    <div class="text-center py-5">
+                        <i class="fa fa-spinner fa-spin fa-2x"/>
+                        <p>Loading...</p>
+                    </div>
+                </t>
+                <t t-else="">
+                    <t t-if="state.data.has_wallet">
+                        <div class="container-fluid">
+                            <div class="row">
+                                <div class="col-lg-4">
+                                    <div class="o_wallet_card">
+                                        <h3>Wallet</h3>
+                                        <div class="o_wallet_address">
+                                            Address: <span t-esc="state.data.address"/>
+                                            <button class="btn btn-link" 
+                                                    t-on-click="() => navigator.clipboard.writeText(state.data.address)">
+                                                <i class="fa fa-copy"/>
+                                            </button>
+                                        </div>
+                                        <div class="o_wallet_balance">
+                                            Balance: <span t-esc="state.data.balance"/> <t t-esc="state.data.currency"/>
+                                            <button class="btn btn-link" t-on-click="onRefreshBalance">
+                                                <i class="fa fa-refresh"/>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-lg-4">
+                                    <div class="o_wallet_card">
+                                        <h3>Transactions</h3>
+                                        <div class="o_transaction_stats">
+                                            <div>Total: <t t-esc="state.data.transaction_count"/></div>
+                                            <div>Pending: <t t-esc="state.data.pending_count"/></div>
+                                            <button class="btn btn-link" t-on-click="onViewTransactions">
+                                                View History
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-lg-4">
+                                    <div class="o_wallet_card">
+                                        <h3>Network</h3>
+                                        <div class="o_network_info">
+                                            <div>Network: <t t-esc="state.data.network_name"/></div>
+                                            <div>Gas Price: <t t-esc="state.data.gas_price"/> Gwei</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                    <t t-else="">
+                        <div class="alert alert-info text-center">
+                            <p>You don't have a wallet yet.</p>
+                            <button class="btn btn-primary" t-on-click="onCreateWallet">Create New Wallet</button>
+                            <span class="mx-2">or</span>
+                            <button class="btn btn-secondary" t-on-click="onImportWallet">Import Existing Wallet</button>
+                        </div>
+                    </t>
+                </t>
+            </div>
+        </div>
+    </t>
+</templates>
+=== ./static/src/components/dashboard/dashboard.js ===
+/** @odoo-module **/
+
+import { registry } from "@web/core/registry";
+import { Component, useState, onWillStart } from "@odoo/owl";
+import { useService } from "@web/core/utils/hooks";
+
+class WalletDashboard extends Component {
+    setup() {
+        this.state = useState({
+            data: {},
+            loading: true
+        });
+        this.orm = useService("orm");
+        this.action = useService("action");
+        
+        onWillStart(async () => {
+            await this.loadDashboardData();
+        });
+    }
+
+    async loadDashboardData() {
+        this.state.loading = true;
+        try {
+            this.state.data = await this.orm.call(
+                'res.users',
+                'get_wallet_dashboard_data',
+                []
+            );
+        } catch (error) {
+            console.error('Failed to load dashboard data:', error);
+            this.state.data = {};
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async onCreateWallet() {
+        await this.action.doAction({
+            type: 'ir.actions.act_window',
+            res_model: 'wallet.create.wizard',
+            views: [[false, 'form']],
+            target: 'new',
+        });
+    }
+
+    async onImportWallet() {
+        await this.action.doAction({
+            type: 'ir.actions.act_window',
+            res_model: 'wallet.import.wizard',
+            views: [[false, 'form']],
+            target: 'new',
+        });
+    }
+
+    async onViewTransactions() {
+        await this.action.doAction({
+            type: 'ir.actions.act_window',
+            res_model: 'wallet.transaction',
+            views: [[false, 'list'], [false, 'form']],
+            domain: [],
+        });
+    }
+
+    async onRefreshBalance() {
+        await this.loadDashboardData();
+    }
+}
+
+WalletDashboard.template = "web3_wallet.WalletDashboard";
+WalletDashboard.components = {};
+
+// Register the component in client_actions registry
+registry.category("client_actions").add("wallet_dashboard", WalletDashboard);
+
+export default WalletDashboard;
+=== ./allfiles.txt ===
+=== ./security/wallet_security.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="0">
+        <!-- Security Categories -->
+        <record id="module_category_wallet" model="ir.module.category">
+            <field name="name">Wallet Management</field>
+            <field name="description">User access levels for the Web3 wallet system</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <!-- Security Groups -->
+        <record id="group_wallet_user" model="res.groups">
+            <field name="name">User</field>
+            <field name="category_id" ref="module_category_wallet"/>
+            <field name="comment">Basic wallet users can view their own wallets and make transactions</field>
+        </record>
+
+        <record id="group_wallet_manager" model="res.groups">
+            <field name="name">Manager</field>
+            <field name="category_id" ref="module_category_wallet"/>
+            <field name="implied_ids" eval="[(4, ref('group_wallet_user'))]"/>
+            <field name="comment">Managers can configure networks and view all transactions</field>
+            <field name="users" eval="[(4, ref('base.user_admin'))]"/>
+        </record>
+
+        <!-- Record Rules -->
+        <record id="wallet_transaction_personal_rule" model="ir.rule">
+            <field name="name">Personal Transactions Only</field>
+            <field name="model_id" ref="model_wallet_transaction"/>
+            <field name="domain_force">[('user_id', '=', user.id)]</field>
+            <field name="groups" eval="[(4, ref('group_wallet_user'))]"/>
+        </record>
+
+        <record id="wallet_transaction_manager_rule" model="ir.rule">
+            <field name="name">All Transactions for Managers</field>
+            <field name="model_id" ref="model_wallet_transaction"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+            <field name="groups" eval="[(4, ref('group_wallet_manager'))]"/>
+        </record>
+
+        <record id="wallet_config_user_rule" model="ir.rule">
+            <field name="name">Active Configurations Only</field>
+            <field name="model_id" ref="model_wallet_config"/>
+            <field name="domain_force">[('active', '=', True)]</field>
+            <field name="groups" eval="[(4, ref('group_wallet_user'))]"/>
+        </record>
+    </data>
+</odoo>
+=== ./security/ir.model.access.csv ===
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_wallet_config_user,wallet.config.user,model_wallet_config,group_wallet_user,1,0,0,0
+access_wallet_config_manager,wallet.config.manager,model_wallet_config,group_wallet_manager,1,1,1,1
+access_wallet_transaction_user,wallet.transaction.user,model_wallet_transaction,group_wallet_user,1,1,1,0
+access_wallet_transaction_manager,wallet.transaction.manager,model_wallet_transaction,group_wallet_manager,1,1,1,1
+access_wallet_wizard_user,wallet.wizard.user,model_wallet_create_wizard,group_wallet_user,1,1,1,0
+access_wallet_wizard_manager,wallet.wizard.manager,model_wallet_create_wizard,group_wallet_manager,1,1,1,1
+access_wallet_create_wizard_user,wallet.create.wizard.user,model_wallet_create_wizard,web3_wallet.group_wallet_user,1,1,1,0
+access_wallet_import_wizard_user,wallet.import.wizard.user,model_wallet_import_wizard,web3_wallet.group_wallet_user,1,1,1,0
+access_wallet_send_transaction_wizard_user,wallet.send.transaction.wizard.user,model_wallet_send_transaction_wizard,web3_wallet.group_wallet_user,1,1,1,0
+=== ./data/wallet_data.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Default Network Configurations -->
+        <record id="ethereum_mainnet_config" model="wallet.config">
+            <field name="name">Ethereum Mainnet</field>
+            <field name="network_id">1</field>
+            <field name="rpc_url">https://eth.llamarpc.com</field>
+            <field name="network_currency">ETH</field>
+            <field name="explorer_url">https://etherscan.io</field>
+            <field name="gas_limit">8000000</field>
+            <field name="gas_price_strategy">legacy</field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="sepolia_testnet_config" model="wallet.config">
+            <field name="name">Sepolia Testnet</field>
+            <field name="network_id">11155111</field>
+            <field name="rpc_url">https://rpc.sepolia.org</field>
+            <field name="network_currency">ETH</field>
+            <field name="explorer_url">https://sepolia.etherscan.io</field>
+            <field name="gas_limit">8000000</field>
+            <field name="gas_price_strategy">legacy</field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Transaction Sequences -->
+        <record id="sequence_wallet_transaction" model="ir.sequence">
+            <field name="name">Wallet Transaction Sequence</field>
+            <field name="code">wallet.transaction</field>
+            <field name="prefix">TX/%(year)s/</field>
+            <field name="padding">6</field>
+            <field name="company_id" eval="False"/>
+        </record>
+
+        <!-- Default System Parameters -->
+        <record id="param_gas_price_update_interval" model="ir.config_parameter">
+            <field name="key">web3_wallet.gas_price_update_interval</field>
+            <field name="value">5</field>
+        </record>
+
+        <record id="param_transaction_confirmation_blocks" model="ir.config_parameter">
+            <field name="key">web3_wallet.transaction_confirmation_blocks</field>
+            <field name="value">12</field>
+        </record>
+    </data>
+</odoo>
+=== ./data/scheduled_tasks.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Update Transaction Status -->
+        <record id="ir_cron_update_transaction_status" model="ir.cron">
+            <field name="name">Update Wallet Transaction Status</field>
+            <field name="model_id" ref="model_wallet_transaction"/>
+            <field name="state">code</field>
+            <field name="code">model.update_pending_transactions()</field>
+            <field name="interval_number">2</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Update Gas Prices -->
+        <record id="ir_cron_update_gas_prices" model="ir.cron">
+            <field name="name">Update Network Gas Prices</field>
+            <field name="model_id" ref="model_wallet_config"/>
+            <field name="state">code</field>
+            <field name="code">model.update_gas_prices()</field>
+            <field name="interval_number">5</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>
+=== ./views/res_users_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_users_form_wallet" model="ir.ui.view">
+        <field name="name">res.users.form.wallet</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form"/>
+        <field name="arch" type="xml">
+            <notebook position="inside">
+                <page string="Wallet" name="wallet">
+                    <group>
+                        <field name="wallet_state" invisible="1"/>
+                        <field name="eth_address" widget="wallet_address" readonly="1"/>
+                        <field name="active_network_id" 
+                               attrs="{'invisible': [('wallet_state', '=', 'none')]}"/>
+                        <field name="wallet_balance" readonly="1"/>
+                        <field name="transaction_count" readonly="1"/>
+                        <field name="last_activity" readonly="1"/>
+                    </group>
+                    <group attrs="{'invisible': [('wallet_state', '!=', 'none')]}">
+                        <button name="action_create_wallet" 
+                                string="Create New Wallet" 
+                                type="object"
+                                class="btn-primary"/>
+                        <button name="action_import_wallet"
+                                string="Import Existing Wallet"
+                                type="object"
+                                class="btn-secondary"/>
+                    </group>
+                    <div class="alert alert-info" role="alert" 
+                         attrs="{'invisible': [('wallet_state', '=', 'none')]}">
+                        <p><strong>Note:</strong> Your wallet private key is securely encrypted and stored.
+                           Only you can use it to sign transactions.</p>
+                    </div>
+                </page>
+            </notebook>
+        </field>
+    </record>
+
+    <!-- Simplified form for user preferences -->
+    <record id="view_users_form_preferences_wallet" model="ir.ui.view">
+        <field name="name">res.users.preferences.form.wallet</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form_simple_modif"/>
+        <field name="arch" type="xml">
+            <group name="preferences" position="after">
+                <group string="Wallet" name="wallet">
+                    <field name="wallet_state" invisible="1"/>
+                    <field name="eth_address" widget="wallet_address" readonly="1"/>
+                    <field name="active_network_id" readonly="1"/>
+                    <field name="wallet_balance" readonly="1"/>
+                    <field name="transaction_count" readonly="1"/>
+                </group>
+            </group>
+        </field>
+    </record>
+</odoo>
+=== ./views/wallet_transaction_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_wallet_transaction_tree" model="ir.ui.view">
+        <field name="name">wallet.transaction.tree</field>
+        <field name="model">wallet.transaction</field>
+        <field name="arch" type="xml">
+            <tree decoration-info="state=='draft'"
+                  decoration-warning="state=='pending'"
+                  decoration-success="state=='completed'"
+                  decoration-danger="state=='failed'">
+                <field name="name"/>
+                <field name="transaction_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <field name="value"/>
+                <field name="gas_price"/>
+                <field name="gas_used"/>
+                <field name="state"/>
+                <field name="create_date"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_wallet_transaction_form" model="ir.ui.view">
+        <field name="name">wallet.transaction.form</field>
+        <field name="model">wallet.transaction</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_send" 
+                            string="Send" 
+                            type="object" 
+                            class="oe_highlight"
+                            attrs="{'invisible': [('state', '!=', 'draft')]}"/>
+                    <button name="action_retry"
+                            string="Retry"
+                            type="object"
+                            class="btn-warning"
+                            attrs="{'invisible': [('state', '!=', 'failed')]}"/>
+                    <button name="action_cancel"
+                            string="Cancel"
+                            type="object"
+                            attrs="{'invisible': [('state', 'not in', ['draft', 'failed'])]}"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,pending,completed,failed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="Transaction Description"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="from_address" 
+                                   widget="wallet_address"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="to_address"
+                                   widget="wallet_address"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="value"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="transaction_hash" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="gas_limit"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="gas_price"
+                                   attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+                            <field name="gas_used" readonly="1"/>
+                            <field name="network_id" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Transaction Details" name="details">
+                            <group>
+                                <field name="nonce" readonly="1"/>
+                                <field name="block_number" readonly="1"/>
+                                <field name="block_timestamp" readonly="1"/>
+                                <field name="confirmation_blocks" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Technical Data" name="technical">
+                            <group>
+                                <field name="raw_transaction" readonly="1"/>
+                                <field name="signed_transaction" readonly="1"/>
+                                <field name="error_message" readonly="1"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_wallet_transaction_search" model="ir.ui.view">
+        <field name="name">wallet.transaction.search</field>
+        <field name="model">wallet.transaction</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="transaction_hash"/>
+                <field name="from_address"/>
+                <field name="to_address"/>
+                <separator/>
+                <filter string="Draft" name="draft" domain="[('state', '=', 'draft')]"/>
+                <filter string="Pending" name="pending" domain="[('state', '=', 'pending')]"/>
+                <filter string="Completed" name="completed" domain="[('state', '=', 'completed')]"/>
+                <filter string="Failed" name="failed" domain="[('state', '=', 'failed')]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Status" name="group_by_state" 
+                            context="{'group_by': 'state'}"/>
+                    <filter string="Date" name="group_by_date" 
+                            context="{'group_by': 'create_date:day'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_wallet_transaction" model="ir.actions.act_window">
+        <field name="name">Transactions</field>
+        <field name="res_model">wallet.transaction</field>
+        <field name="view_mode">tree,form</field>
+        <field name="context">{'search_default_draft': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create your first transaction!
+            </p>
+            <p>
+                Send ETH or interact with smart contracts on the blockchain.
+            </p>
+        </field>
+    </record>
+
+    <!-- Dashboard view -->
+    <record id="action_wallet_dashboard" model="ir.actions.client">
+        <field name="name">Wallet Dashboard</field>
+        <field name="tag">wallet_dashboard</field>
+        <field name="target">main</field>
+    </record>
+</odoo>
+=== ./views/web3_wallet_menus.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="menu_web3_wallet_root"
+              name="Web3 Wallet"
+              web_icon="web3_wallet,static/description/icon.png"
+              sequence="50"/>
+
+    <menuitem id="menu_wallet_dashboard"
+              name="Dashboard"
+              parent="menu_web3_wallet_root"
+              action="wallet_dashboard_action"
+              sequence="10"/>
+
+    <menuitem id="menu_wallet_transactions"
+              name="Transactions"
+              parent="menu_web3_wallet_root"
+              action="action_wallet_transaction"
+              sequence="20"/>
+
+    <menuitem id="menu_wallet_configuration"
+              name="Configuration"
+              parent="menu_web3_wallet_root"
+              sequence="100"/>
+
+    <menuitem id="menu_wallet_networks"
+              name="Networks"
+              parent="menu_wallet_configuration"
+              action="action_wallet_config"
+              sequence="10"
+              groups="web3_wallet.group_wallet_manager"/>
+              
+    <record id="wallet_dashboard_action" model="ir.actions.client">
+        <field name="name">Wallet Dashboard</field>
+        <field name="tag">wallet_dashboard</field>
+    </record>
+</odoo>
+=== ./views/wallet_actions.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="wallet_dashboard_action" model="ir.actions.client">
+        <field name="name">Wallet Dashboard</field>
+        <field name="tag">wallet_dashboard</field>
+        <field name="target">main</field>
+    </record>
+</odoo>
+=== ./views/wallet_config_views.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_wallet_config_tree" model="ir.ui.view">
+        <field name="name">wallet.config.tree</field>
+        <field name="model">wallet.config</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="network_id"/>
+                <field name="network_currency"/>
+                <field name="rpc_url"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_wallet_config_form" model="ir.ui.view">
+        <field name="name">wallet.config.form</field>
+        <field name="model">wallet.config</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="test_connection" type="object"
+                                class="oe_stat_button" icon="fa-plug">
+                            <span>Test Connection</span>
+                        </button>
+                        <button name="toggle_active" type="object"
+                                class="oe_stat_button" icon="fa-archive">
+                            <field name="active" widget="boolean_button"/>
+                        </button>
+                    </div>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="e.g. Ethereum Mainnet"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="network_id"/>
+                            <field name="network_currency"/>
+                            <field name="rpc_url" placeholder="https://..."/>
+                            <field name="explorer_url"/>
+                        </group>
+                        <group>
+                            <field name="gas_limit"/>
+                            <field name="gas_price_strategy"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Advanced Settings" name="advanced">
+                            <group>
+                                <field name="gas_price_multiplier"/>
+                                <field name="max_gas_price"/>
+                                <field name="confirmation_blocks"/>
+                            </group>
+                        </page>
+                        <page string="Technical Information" name="technical">
+                            <group>
+                                <field name="last_block_number"/>
+                                <field name="last_sync_time"/>
+                                <field name="sync_status"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_wallet_config_search" model="ir.ui.view">
+        <field name="name">wallet.config.search</field>
+        <field name="model">wallet.config</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="network_id"/>
+                <filter string="Active" name="active" domain="[('active', '=', True)]"/>
+                <filter string="Archived" name="inactive" domain="[('active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Network Currency" name="group_by_currency" 
+                            context="{'group_by': 'network_currency'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_wallet_config" model="ir.actions.act_window">
+        <field name="name">Network Configurations</field>
+        <field name="res_model">wallet.config</field>
+        <field name="view_mode">tree,form</field>
+        <field name="context">{'search_default_active': 1}</field>
+    </record>
+</odoo>
+=== ./controllers/__init__.py ===
+from . import main
+=== ./controllers/main.py ===
+from odoo import http
+from odoo.http import request
+from odoo.exceptions import AccessError, UserError
+import logging
+import json
+
+_logger = logging.getLogger(__name__)
+
+class WalletController(http.Controller):
+    @http.route('/web3_wallet/create', type='json', auth='user')
+    def create_wallet(self, **kwargs):
+        """Create new Ethereum wallet"""
+        try:
+            result = request.env['res.users'].create_web3_wallet()
+            return {
+                'success': True,
+                'data': result
+            }
+        except Exception as e:
+            _logger.error("Wallet creation failed: %s", str(e))
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @http.route('/web3_wallet/balance/<string:address>', type='json', auth='user')
+    def get_balance(self, address, **kwargs):
+        """Get wallet balance"""
+        try:
+            wallet = request.env['wallet.config'].get_web3_connection()
+            balance = wallet.eth.get_balance(address)
+            return {
+                'success': True,
+                'balance': wallet.from_wei(balance, 'ether'),
+                'address': address
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @http.route('/web3_wallet/transaction/estimate', type='json', auth='user')
+    def estimate_transaction(self, to_address, amount, **kwargs):
+        """Estimate transaction gas cost"""
+        try:
+            result = request.env['wallet.transaction'].estimate_transaction(
+                to_address, float(amount))
+            return {
+                'success': True,
+                'data': result
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @http.route('/web3_wallet/transaction/send', type='json', auth='user')
+    def send_transaction(self, **post):
+        """Send transaction"""
+        try:
+            required_fields = ['to_address', 'amount', 'gas_price', 'gas_limit']
+            if not all(field in post for field in required_fields):
+                raise UserError("Missing required transaction parameters")
+
+            transaction = request.env['wallet.transaction'].create({
+                'to_address': post['to_address'],
+                'value': float(post['amount']),
+                'gas_price': float(post['gas_price']),
+                'gas_limit': int(post['gas_limit']),
+                'user_id': request.env.user.id,
+            })
+            
+            result = transaction.submit_transaction()
+            return {
+                'success': True,
+                'data': result
+            }
+        except Exception as e:
+            _logger.error("Transaction failed: %s", str(e))
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @http.route('/web3_wallet/transaction/<string:tx_hash>/status', type='json', auth='user')
+    def get_transaction_status(self, tx_hash, **kwargs):
+        """Get transaction status"""
+        try:
+            transaction = request.env['wallet.transaction'].search([
+                ('transaction_hash', '=', tx_hash)
+            ], limit=1)
+            
+            if not transaction:
+                return {
+                    'success': False,
+                    'error': 'Transaction not found'
+                }
+                
+            return {
+                'success': True,
+                'data': {
+                    'status': transaction.status,
+                    'block_number': transaction.block_number,
+                    'gas_used': transaction.gas_used,
+                    'timestamp': transaction.timestamp,
+                }
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @http.route('/web3_wallet/networks', type='json', auth='user')
+    def get_networks(self):
+        """Get available networks"""
+        try:
+            networks = request.env['wallet.config'].search_read(
+                domain=[('active', '=', True)],
+                fields=['name', 'network_id', 'rpc_url', 'network_currency']
+            )
+            return {
+                'success': True,
+                'data': networks
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }

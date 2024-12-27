@@ -1,0 +1,92 @@
+[2024-12-27 15:32:49] Starting base module initialization...
+[2024-12-27 15:32:50] Attempt 1 of 3...
+[2024-12-27 15:32:50] Container status:
+feab3d87719d   odoo-nostr-project_odoo   "/opt/odoo/docker-en…"   41 seconds ago   Up 30 seconds            0.0.0.0:8069->8069/tcp, :::8069->8069/tcp, 0.0.0.0:8072->8072/tcp, :::8072->8072/tcp   odoo-nostr-project_odoo_1
+9d7cadb6abca   postgres:14               "docker-entrypoint.s…"   5 minutes ago    Up 5 minutes (healthy)   5432/tcp                                                                               odoo-nostr-project_postgres_1
+[2024-12-27 15:32:50] Current Odoo logs:
+Waiting for PostgreSQL...
+PostgreSQL is ready!
+Configuring database tables...
+CREATE TABLE
+CREATE TABLE
+INSERT 0 4
+INSERT 0 1
+Initializing module: base
+[2024-12-27 15:32:50] Executing base module initialization...
+[2024-12-27 15:32:58] Initialization failed with exit code: 255
+[2024-12-27 15:32:58] Recent Odoo logs:
+Waiting for PostgreSQL...
+PostgreSQL is ready!
+Configuring database tables...
+CREATE TABLE
+CREATE TABLE
+INSERT 0 4
+INSERT 0 1
+Initializing module: base
+Module base initialized successfully
+Initializing module: web
+[2024-12-27 15:32:58] Checking database state...
+ name |   state   
+------+-----------
+ base | installed
+(1 row)
+
+[2024-12-27 15:32:58] Waiting 10 seconds before next attempt...
+[2024-12-27 15:33:09] Attempt 2 of 3...
+[2024-12-27 15:33:09] Container status:
+feab3d87719d   odoo-nostr-project_odoo   "/opt/odoo/docker-en…"   About a minute ago   Up 49 seconds            0.0.0.0:8069->8069/tcp, :::8069->8069/tcp, 0.0.0.0:8072->8072/tcp, :::8072->8072/tcp   odoo-nostr-project_odoo_1
+9d7cadb6abca   postgres:14               "docker-entrypoint.s…"   6 minutes ago        Up 6 minutes (healthy)   5432/tcp                                                                               odoo-nostr-project_postgres_1
+[2024-12-27 15:33:09] Current Odoo logs:
+CREATE TABLE
+INSERT 0 4
+INSERT 0 1
+Initializing module: base
+Module base initialized successfully
+Initializing module: web
+Module web initialized successfully
+Initializing module: bus
+Module bus initialized successfully
+Initializing module: mail
+[2024-12-27 15:33:09] Executing base module initialization...
+[2024-12-27 15:33:14] Initialization failed with exit code: 255
+[2024-12-27 15:33:14] Recent Odoo logs:
+Waiting for PostgreSQL...
+PostgreSQL is ready!
+Configuring database tables...
+CREATE TABLE
+CREATE TABLE
+INSERT 0 4
+INSERT 0 1
+Initializing module: base
+Module base initialized successfully
+Initializing module: web
+Module web initialized successfully
+Initializing module: bus
+Module bus initialized successfully
+Initializing module: mail
+[2024-12-27 15:33:14] Checking database state...
+ name |   state   
+------+-----------
+ base | installed
+(1 row)
+
+[2024-12-27 15:33:14] Waiting 10 seconds before next attempt...
+[2024-12-27 15:33:24] Attempt 3 of 3...
+[2024-12-27 15:33:24] Container status:
+feab3d87719d   odoo-nostr-project_odoo   "/opt/odoo/docker-en…"   About a minute ago   Up About a minute        0.0.0.0:8069->8069/tcp, :::8069->8069/tcp, 0.0.0.0:8072->8072/tcp, :::8072->8072/tcp   odoo-nostr-project_odoo_1
+9d7cadb6abca   postgres:14               "docker-entrypoint.s…"   6 minutes ago        Up 6 minutes (healthy)   5432/tcp                                                                               odoo-nostr-project_postgres_1
+[2024-12-27 15:33:24] Current Odoo logs:
+Checking __manifest__.py content...
+[OK] __manifest__.py contains 'depends' and 'data' sections
+
+Checking configuration parameters...
+[OK] Relay URLs are set in the database
+
+Testing network connectivity...
+[OK] Successfully connected to wss://nostr-pub.wellorder.net
+
+Pre-update checks completed.
+[2024-12-27 15:33:24] Executing base module initialization...
+[2024-12-27 15:33:36] Base module initialization appears successful
+[2024-12-27 15:33:36] Base module initialization completed successfully
+[2024-12-27 15:33:36] Proceeding with Nostr schema setup...
